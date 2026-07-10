@@ -63,7 +63,7 @@ export default function SiteHeader() {
       <div className="hidden md:flex bg-primary/95 text-primary-foreground text-[11px]">
         <div className="container-tight py-2 flex items-center justify-between">
           <div className="flex items-center gap-4 opacity-90"><span className="flex items-center gap-1"><MapPin className="h-3 w-3"/> Mangalwar Peth, Kolhapur</span><a href="tel:+919657093006" className="flex items-center gap-1 hover:opacity-100"><Phone className="h-3 w-3"/> +91 96570 93006</a></div>
-          <div className="opacity-90">Free shipping across India • COD available</div>
+          <div className="opacity-90">Free shipping across India · COD available · WhatsApp us for custom orders</div>
         </div>
       </div>
       <div className="container-tight">

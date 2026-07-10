@@ -26,7 +26,7 @@ function Hero({ data }) {
       <div className="relative h-full flex items-end md:items-center">
         <div className="container-tight pb-16 md:pb-0">
           <div className="max-w-xl text-white">
-            <div className="text-xs md:text-sm uppercase tracking-[0.35em] opacity-80">Aurelia SS25</div>
+            <div className="text-xs md:text-sm uppercase tracking-[0.35em] opacity-80">{new Date().getFullYear()} Collection</div>
             <h1 className="font-serif text-4xl md:text-6xl leading-tight mt-3">{s.heading}</h1>
             <p className="mt-4 text-base md:text-lg opacity-90">{s.subheading}</p>
             <Link href={s.cta_link || '/products'} className="inline-flex items-center gap-2 mt-8 bg-white text-primary px-6 py-3 text-sm uppercase tracking-widest hover:bg-white/90 transition">
