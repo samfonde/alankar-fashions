@@ -19,8 +19,14 @@ export default function AdminLoginPage() {
     if (error) { setLoading(false); return toast.error(error.message) }
     // Verify admin
     const r = await fetch('/api/auth/me').then(r=>r.json())
-    if (r.profile?.role !== 'admin') { setLoading(false); await sb.auth.signOut(); return toast.error('You are not an admin.') }
-    toast.success('Welcome, admin'); router.push('/admin')
+    if (r.profile?.role !== 'admin') {
+      setLoading(false)
+      if (!r.profile) { toast.error('Database not ready. Redirecting to setup…'); router.push('/setup'); return }
+      await sb.auth.signOut(); return toast.error('You are not an admin.')
+    }
+    toast.success('Welcome, admin')
+    setLoading(false)
+    router.push('/admin')
   }
 
   const bootstrap = async (e) => {

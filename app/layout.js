@@ -12,8 +12,8 @@ export const metadata = {
 
 export default function RootLayout({ children }) {
   return (
-    <html lang="en" className={`${serif.variable} ${sans.variable}`}>
-      <body className="min-h-screen bg-background text-foreground antialiased font-sans">
+    <html lang="en" className={`${serif.variable} ${sans.variable}`} suppressHydrationWarning>
+      <body className="min-h-screen bg-background text-foreground antialiased font-sans" suppressHydrationWarning>
         {children}
         <Toaster position="top-center" richColors closeButton />
       </body>
