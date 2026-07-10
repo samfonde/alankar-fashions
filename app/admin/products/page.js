@@ -12,7 +12,7 @@ export default function AdminProducts(){
   const [edit,setEdit] = useState(null)
   const [q,setQ] = useState('')
   const load = () => { fetch('/api/admin/products').then(r=>r.json()).then(d=>setItems(d.products||[])); fetch('/api/categories').then(r=>r.json()).then(d=>setCats(d.categories||[])) }
-  useEffect(load,[])
+  useEffect(() => { load() }, [])
   const save = async () => {
     if (!edit.name || !edit.slug || edit.price <= 0) return toast.error('Name, slug and price are required')
     const payload = { ...edit, price: Number(edit.price), discount_price: edit.discount_price ? Number(edit.discount_price):null, stock: Number(edit.stock||0), sizes: Array.isArray(edit.sizes)?edit.sizes:String(edit.sizes||'').split(',').map(s=>s.trim()).filter(Boolean), colors: Array.isArray(edit.colors)?edit.colors:String(edit.colors||'').split(',').map(s=>s.trim()).filter(Boolean), tags: Array.isArray(edit.tags)?edit.tags:String(edit.tags||'').split(',').map(s=>s.trim()).filter(Boolean) }

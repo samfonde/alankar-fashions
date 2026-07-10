@@ -4,6 +4,7 @@ import { useRouter } from 'next/navigation'
 import SiteHeader from '@/components/site-header'
 import SiteFooter from '@/components/site-footer'
 import ProductCard from '@/components/product-card'
+import WhatsAppFab from '@/components/whatsapp-fab'
 import { inr } from '@/lib/format'
 import { Heart, Truck, Shield, Undo2, ChevronRight } from 'lucide-react'
 import { toast } from 'sonner'
@@ -141,8 +142,31 @@ function PDP({ slug }) {
             </div>
           </section>
         )}
+
+        {Array.isArray(p.faqs) && p.faqs.length > 0 && (
+          <section className="mt-16 max-w-3xl">
+            <h2 className="font-serif text-2xl md:text-3xl mb-6">Frequently asked</h2>
+            <div className="divide-y divide-border">
+              {p.faqs.map((f,i) => (
+                <details key={i} className="py-3 group">
+                  <summary className="cursor-pointer font-medium flex justify-between items-center"><span>{f.q}</span><span className="text-gold-500 group-open:rotate-45 transition">+</span></summary>
+                  <p className="mt-2 text-muted-foreground leading-relaxed">{f.a}</p>
+                </details>
+              ))}
+            </div>
+          </section>
+        )}
+
+        <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify({
+          '@context':'https://schema.org','@type':'Product',
+          name: p.name, description: p.description, sku: p.sku, brand:{ '@type':'Brand', name: p.brand||'Alankar Fashions' },
+          image: p.images||[], material: p.material||undefined,
+          offers: { '@type':'Offer', priceCurrency:'INR', price: String(p.discount_price||p.price), availability: p.stock>0?'https://schema.org/InStock':'https://schema.org/OutOfStock', url: (process.env.NEXT_PUBLIC_BASE_URL||'')+`/products/${p.slug}` },
+          aggregateRating: p.rating_count>0 ? { '@type':'AggregateRating', ratingValue: String(p.rating_avg||0), reviewCount: String(p.rating_count) } : undefined
+        }) }}/>
       </main>
       <SiteFooter/>
+      <WhatsAppFab/>
     </div>
   )
 }

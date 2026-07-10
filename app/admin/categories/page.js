@@ -7,7 +7,7 @@ export default function AdminCategories(){
   const [items,setItems] = useState([])
   const [form,setForm] = useState(null)
   const load = () => fetch('/api/admin/categories').then(r=>r.json()).then(d=>setItems(d.categories||[]))
-  useEffect(load,[])
+  useEffect(() => { load() }, [])
   const save = async () => { if (!form.name || !form.slug) return toast.error('Name and slug required'); const r = await fetch('/api/admin/categories', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(form) }); if (!r.ok) { const d = await r.json(); return toast.error(d.error||'Failed') } toast.success('Saved'); setForm(null); load() }
   const del = async (id) => { if(!confirm('Delete category?')) return; await fetch(`/api/admin/categories/${id}`, { method:'DELETE'}); load() }
   return (

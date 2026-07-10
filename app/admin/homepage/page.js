@@ -7,7 +7,7 @@ export default function AdminHomepage(){
   const [sections,setSections] = useState([])
   const [loading,setLoading] = useState(true)
   const load = () => fetch('/api/admin/homepage').then(r=>r.json()).then(d=>{setSections(d.sections||[]); setLoading(false)})
-  useEffect(load,[])
+  useEffect(() => { load() }, [])
   const update = (id, patch) => setSections(sections.map(s => s.id===id ? { ...s, ...patch }:s))
   const save = async (s) => { const r = await fetch(`/api/admin/homepage/${s.id}`, { method:'PATCH', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ title: s.title, data: s.data, is_active: s.is_active, sort_order: s.sort_order }) }); if(!r.ok){const d=await r.json();return toast.error(d.error||'Failed')} toast.success('Saved') }
 

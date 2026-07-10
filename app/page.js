@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react'
 import Link from 'next/link'
 import SiteHeader from '@/components/site-header'
 import SiteFooter from '@/components/site-footer'
+import WhatsAppFab from '@/components/whatsapp-fab'
 import ProductCard from '@/components/product-card'
 import { ArrowRight } from 'lucide-react'
 
@@ -172,6 +173,13 @@ function App() {
       <SiteHeader/>
       <main><Home/></main>
       <SiteFooter/>
+      <WhatsAppFab/>
+      <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify({
+        '@context':'https://schema.org','@type':'LocalBusiness',name:'Alankar Fashions',image:(process.env.NEXT_PUBLIC_BASE_URL||'')+'/favicon.svg',
+        telephone:'+91 96570 93006',email:'hello@alankarfashions.com',priceRange:'₹₹',currenciesAccepted:'INR',
+        address:{'@type':'PostalAddress',streetAddress:'Shop No 1, 1354 B Ward, near Khari Corner, Mangalwar Peth',addressLocality:'Kolhapur',addressRegion:'Maharashtra',postalCode:'416012',addressCountry:'IN'},
+        sameAs:['https://www.instagram.com/alankar_fashions_kop/','https://www.facebook.com/AlankarFashion/']
+      }) }}/>
     </div>
   )
 }

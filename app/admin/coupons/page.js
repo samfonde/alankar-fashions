@@ -8,7 +8,7 @@ export default function AdminCoupons(){
   const [items,setItems] = useState([])
   const [form,setForm] = useState(null)
   const load = () => fetch('/api/admin/coupons').then(r=>r.json()).then(d=>setItems(d.coupons||[]))
-  useEffect(load,[])
+  useEffect(() => { load() }, [])
   const save = async () => { if(!form.code||!form.discount_value) return toast.error('Code and value required'); const r = await fetch('/api/admin/coupons', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ ...form, code: form.code.toUpperCase(), discount_value: Number(form.discount_value), min_order_value: Number(form.min_order_value||0) }) }); if(!r.ok){const d=await r.json();return toast.error(d.error||'Failed')} toast.success('Saved'); setForm(null); load() }
   const del = async (id) => { if(!confirm('Delete?')) return; await fetch(`/api/admin/coupons/${id}`,{method:'DELETE'}); load() }
   return (

@@ -38,6 +38,8 @@ async function audit(admin, action, entity, entity_id, changes) {
   } catch (e) { console.error('audit failed', e) }
 }
 
+function escHtml(s){ return String(s||'').replace(/[&<>"']/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c])) }
+
 async function getRazorpay() {
   const admin = getSupabaseAdmin()
   const { data } = await admin.from('settings').select('value').eq('key','payment_razorpay').single()
@@ -55,17 +57,97 @@ async function handler(request, { params }) {
     // ------------- HEALTH -------------
     if (route === '/health' && method === 'GET') return json({ ok: true, ts: Date.now() })
 
+    // ------------- BRAND (public safe subset) -------------
+    if (route === '/brand' && method === 'GET') {
+      try {
+        const admin = getSupabaseAdmin()
+        const { data } = await admin.from('settings').select('key,value').in('key', ['brand','seo','analytics'])
+        const map = Object.fromEntries((data||[]).map(x => [x.key, x.value]))
+        return json({ brand: map.brand || {}, seo: map.seo || {}, analytics: map.analytics || {} })
+      } catch { return json({ brand: {}, seo: {}, analytics: {} }) }
+    }
+
+    // ------------- SITEMAP + ROBOTS -------------
+    if (route === '/sitemap' && method === 'GET') {
+      const admin = getSupabaseAdmin()
+      const base = process.env.NEXT_PUBLIC_BASE_URL || 'https://alankarfashions.com'
+      const { data: products } = await admin.from('products').select('slug,updated_at').eq('status','published').limit(5000)
+      const { data: cats } = await admin.from('categories').select('slug').limit(500)
+      const urls = [
+        `<url><loc>${base}/</loc><changefreq>daily</changefreq><priority>1.0</priority></url>`,
+        `<url><loc>${base}/products</loc><changefreq>daily</changefreq><priority>0.9</priority></url>`,
+        `<url><loc>${base}/contact</loc></url>`,
+        `<url><loc>${base}/faq</loc></url>`,
+        ...(cats||[]).map(c => `<url><loc>${base}/products?category=${c.slug}</loc><priority>0.8</priority></url>`),
+        ...(products||[]).map(p => `<url><loc>${base}/products/${p.slug}</loc><lastmod>${new Date(p.updated_at||Date.now()).toISOString().split('T')[0]}</lastmod><priority>0.7</priority></url>`),
+      ].join('')
+      const xml = `<?xml version="1.0" encoding="UTF-8"?><urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">${urls}</urlset>`
+      return new NextResponse(xml, { headers: { 'content-type': 'application/xml' } })
+    }
+    if (route === '/robots' && method === 'GET') {
+      const base = process.env.NEXT_PUBLIC_BASE_URL || 'https://alankarfashions.com'
+      const txt = `User-agent: *\nAllow: /\nDisallow: /admin\nDisallow: /api/admin\n\nSitemap: ${base}/sitemap.xml\n`
+      return new NextResponse(txt, { headers: { 'content-type': 'text/plain' } })
+    }
+
+    // ------------- INVOICE (HTML print-friendly) -------------
+    if (route.startsWith('/invoice/') && method === 'GET') {
+      const id = path[1]
+      const admin = getSupabaseAdmin()
+      const { data: order } = await admin.from('orders').select('*').eq('id', id).single()
+      if (!order) return json({ error: 'Not found' }, 404)
+      const user = await requireUser()
+      const { admin: adm } = await requireAdmin()
+      if (order.user_id && (!user || user.id !== order.user_id) && !adm) return json({ error: 'Forbidden' }, 403)
+      const { data: brandS } = await admin.from('settings').select('value').eq('key','brand').single()
+      const b = brandS?.value || {}
+      const rows = (order.items||[]).map((i,idx) => `<tr><td>${idx+1}</td><td>${escHtml(i.name)}<div style="font-size:11px;color:#666">${[i.size,i.color].filter(Boolean).join(' · ')}</div></td><td style="text-align:center">${i.quantity}</td><td style="text-align:right">₹${Number(i.price).toLocaleString('en-IN')}</td><td style="text-align:right">₹${Number(i.subtotal).toLocaleString('en-IN')}</td></tr>`).join('')
+      const html = `<!doctype html><html><head><meta charset="utf-8"/><title>Invoice ${order.order_number}</title><style>body{font-family:-apple-system,'Segoe UI',sans-serif;color:#1c1917;padding:32px;max-width:900px;margin:0 auto}h1{font-family:Georgia,serif;color:#3B1F1A;margin:0}table{width:100%;border-collapse:collapse;margin-top:16px}th,td{border-bottom:1px solid #eee;padding:10px;font-size:13px;text-align:left}th{background:#faf7f2;text-transform:uppercase;font-size:11px;letter-spacing:1px}.row{display:flex;justify-content:space-between;gap:20px;margin-bottom:20px}.box{padding:14px;background:#faf7f2;border-radius:6px;font-size:13px;line-height:1.6}.total{font-size:16px;font-weight:700;color:#3B1F1A}@media print{body{padding:0}}</style></head><body><div class="row"><div><h1>${escHtml(b.name||'Alankar Fashions')}</h1><div style="color:#666;font-size:13px;margin-top:4px">${escHtml(b.address||'')}</div>${b.support_phone?`<div style="color:#666;font-size:13px">${escHtml(b.support_phone)}</div>`:''}${b.gstin?`<div style="color:#666;font-size:13px">GSTIN: ${escHtml(b.gstin)}</div>`:''}</div><div style="text-align:right"><div style="font-size:12px;color:#666;text-transform:uppercase;letter-spacing:2px">Tax Invoice</div><h2 style="margin:6px 0">${escHtml(order.order_number)}</h2><div style="font-size:12px;color:#666">${new Date(order.created_at).toLocaleDateString('en-IN')}</div></div></div><div class="row"><div class="box" style="flex:1"><strong>Bill To</strong><div>${escHtml(order.shipping_address?.name||'')}</div><div>${escHtml(order.shipping_address?.line1||'')}${order.shipping_address?.line2?', '+escHtml(order.shipping_address.line2):''}</div><div>${escHtml(order.shipping_address?.city||'')}, ${escHtml(order.shipping_address?.state||'')} ${escHtml(order.shipping_address?.pincode||'')}</div><div>${escHtml(order.phone||'')} · ${escHtml(order.email||'')}</div></div><div class="box" style="flex:1"><strong>Payment</strong><div>Status: ${order.payment_status.toUpperCase()}</div>${order.razorpay_payment_id?`<div>Ref: ${escHtml(order.razorpay_payment_id)}</div>`:''}<div>Method: Razorpay</div></div></div><table><thead><tr><th>#</th><th>Item</th><th style="text-align:center">Qty</th><th style="text-align:right">Rate</th><th style="text-align:right">Amount</th></tr></thead><tbody>${rows}</tbody></table><div style="margin-top:16px;text-align:right;font-size:13px;line-height:2"><div>Subtotal: ₹${Number(order.subtotal).toLocaleString('en-IN')}</div>${order.discount>0?`<div>Discount: −₹${Number(order.discount).toLocaleString('en-IN')}</div>`:''}<div>Shipping: ${order.shipping>0?'₹'+Number(order.shipping).toLocaleString('en-IN'):'Free'}</div><div class="total" style="margin-top:8px;padding-top:8px;border-top:2px solid #3B1F1A">Total: ₹${Number(order.total).toLocaleString('en-IN')}</div></div><div style="margin-top:40px;padding-top:16px;border-top:1px solid #eee;text-align:center;color:#888;font-size:12px">Thank you for shopping with ${escHtml(b.name||'Alankar Fashions')}. Please retain this invoice for your records.<br/><button onclick="window.print()" style="margin-top:12px;padding:8px 16px;background:#3B1F1A;color:#fff;border:none;border-radius:4px;cursor:pointer">Print / Save PDF</button></div></body></html>`
+      return new NextResponse(html, { headers: { 'content-type': 'text/html' } })
+    }
+
+    // ------------- ABANDONED CART CRON (call via cron-job.org or GitHub Actions) -------------
+    if (route === '/cron/abandoned-cart' && method === 'POST') {
+      // Uses a secret to prevent abuse
+      const token = request.headers.get('x-cron-token')
+      if (token !== (process.env.CRON_SECRET || 'change_me_cron_secret')) return json({ error: 'Unauthorized' }, 401)
+      // In this MVP, we store cart in localStorage; abandoned-cart tracking would require server-side cart persistence.
+      // As a fallback: send abandoned-checkout reminders for pending unpaid orders older than 2 hours, less than 24 hours.
+      const admin = getSupabaseAdmin()
+      const since = new Date(Date.now() - 24*60*60*1000).toISOString()
+      const until = new Date(Date.now() - 2*60*60*1000).toISOString()
+      const { data: orders } = await admin.from('orders').select('*').eq('payment_status','pending').gte('created_at', since).lte('created_at', until).is('razorpay_payment_id', null)
+      let sent = 0
+      for (const o of (orders||[])) {
+        if (!o.email) continue
+        const { sendAbandonedCart } = await import('@/lib/email')
+        const r = await sendAbandonedCart({ to: o.email, order: o })
+        if (r?.ok) sent++
+      }
+      return json({ ok: true, sent, checked: (orders||[]).length })
+    }
+
     // ------------- SETUP -------------
     if (route === '/setup/check' && method === 'GET') {
       const admin = getSupabaseAdmin()
       const { error } = await admin.from('products').select('id').limit(1)
-      return json({ ready: !error })
+      // also check for meta_title column (indicates migration_alankar was applied)
+      const { error: colError } = await admin.from('products').select('meta_title').limit(1)
+      return json({ ready: !error, migrated: !colError })
     }
     if (route === '/setup/schema' && method === 'GET') {
       try {
         const fs = await import('fs')
         const p = await import('path')
         const sql = fs.readFileSync(p.default.join(process.cwd(), 'supabase', 'schema.sql'), 'utf8')
+        return new NextResponse(sql, { headers: { 'content-type': 'text/plain' } })
+      } catch (e) { return json({ error: e.message }, 500) }
+    }
+    if (route === '/setup/migration' && method === 'GET') {
+      try {
+        const fs = await import('fs')
+        const p = await import('path')
+        const sql = fs.readFileSync(p.default.join(process.cwd(), 'supabase', 'migration_alankar.sql'), 'utf8')
         return new NextResponse(sql, { headers: { 'content-type': 'text/plain' } })
       } catch (e) { return json({ error: e.message }, 500) }
     }
@@ -518,6 +600,15 @@ async function handler(request, { params }) {
       // Settings
       if (route === '/admin/settings' && method === 'GET') { const { data } = await db.from('settings').select('*'); return json({ settings: data||[] }) }
       if (route === '/admin/settings' && method === 'POST') { const { key, value } = await request.json(); const { data, error } = await db.from('settings').upsert({ key, value, updated_at: new Date().toISOString() }).select().single(); if(error) return json({error:error.message},400); await audit(adm,'update','settings',key,value); return json({ setting: data }) }
+
+      // Email test
+      if (route === '/admin/email-test' && method === 'POST') {
+        const { to } = await request.json()
+        if (!to) return json({ error: 'to required' }, 400)
+        const { sendTest } = await import('@/lib/email')
+        const r = await sendTest({ to })
+        return json(r)
+      }
 
       // Storage upload (base64 -> supabase storage)
       if (route === '/admin/upload' && method === 'POST') {

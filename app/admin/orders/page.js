@@ -11,7 +11,7 @@ export default function AdminOrders(){
   const [detail,setDetail] = useState(null)
   const [filter,setFilter] = useState('')
   const load = () => fetch('/api/admin/orders').then(r=>r.json()).then(d=>setItems(d.orders||[]))
-  useEffect(load,[])
+  useEffect(() => { load() }, [])
   const updateStatus = async (id, status, note) => { const r = await fetch(`/api/admin/orders/${id}`, { method:'PATCH', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ status, note }) }); if (!r.ok) return toast.error('Failed'); toast.success(`Order updated: ${status}`); load(); if (detail) setDetail({...detail, status}) }
   const filtered = items.filter(o => !filter || o.status === filter)
   return (
@@ -63,6 +63,10 @@ export default function AdminOrders(){
                 {STATUSES.map(s => (
                   <button key={s} onClick={()=>updateStatus(detail.id, s)} className={`px-3 py-1.5 text-xs border ${detail.status===s?'bg-primary text-primary-foreground border-primary':'border-border'}`}>{s}</button>
                 ))}
+              </div>
+              <div className="flex items-center gap-2 pt-3 border-t border-border">
+                <a href={`/api/invoice/${detail.id}`} target="_blank" rel="noopener" className="inline-flex items-center gap-2 h-9 px-3 border border-border text-xs uppercase tracking-widest">Invoice / Print</a>
+                <a href={`https://wa.me/${(detail.phone||'').replace(/[^0-9]/g,'')}?text=${encodeURIComponent(`Hi ${detail.shipping_address?.name||''}! Your order ${detail.order_number} from Alankar Fashions is confirmed. Total: ₹${detail.total}. Thank you!`)}`} target="_blank" rel="noopener" className="inline-flex items-center gap-2 h-9 px-3 border border-border text-xs uppercase tracking-widest">WhatsApp Customer</a>
               </div>
             </div>
           </div>
