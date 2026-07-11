@@ -2,7 +2,7 @@
 import Link from 'next/link'
 import { usePathname, useRouter } from 'next/navigation'
 import { useEffect, useState } from 'react'
-import { LayoutDashboard, Package, ShoppingCart, Users, Tag, Image, Settings, LogOut, Menu, X, Layers } from 'lucide-react'
+import { LayoutDashboard, Package, ShoppingCart, Users, Tag, Image, Settings, LogOut, Menu, X, Layers, Star } from 'lucide-react'
 import { getSupabaseBrowser } from '@/lib/supabase/browser'
 import { toast } from 'sonner'
 
@@ -29,6 +29,7 @@ export default function AdminLayout({ children }) {
   const nav = [
     ['Dashboard', '/admin', LayoutDashboard],
     ['Products', '/admin/products', Package],
+    ['Reviews', '/admin/reviews', Star],
     ['Categories', '/admin/categories', Layers],
     ['Orders', '/admin/orders', ShoppingCart],
     ['Customers', '/admin/customers', Users],
@@ -41,7 +42,7 @@ export default function AdminLayout({ children }) {
     <div className="min-h-screen bg-muted/30 flex">
       <aside className={`fixed lg:static inset-y-0 left-0 z-40 w-64 bg-sidebar text-sidebar-foreground transform ${open?'translate-x-0':'-translate-x-full'} lg:translate-x-0 transition-transform`}>
         <div className="h-16 flex items-center justify-between px-5 border-b border-sidebar-border">
-          <Link href="/admin" className="font-serif tracking-[0.25em] text-lg">AURELIA</Link>
+          <Link href="/admin" className="font-serif tracking-[0.15em] text-lg">ALANKAR FASHIONS</Link>
           <button className="lg:hidden" onClick={()=>setOpen(false)}><X className="h-5 w-5"/></button>
         </div>
         <nav className="p-3 space-y-1">
