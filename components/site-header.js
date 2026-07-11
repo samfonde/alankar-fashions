@@ -53,9 +53,15 @@ export default function SiteHeader() {
     const t = setTimeout(() => { fetch(`/api/search/suggest?q=${encodeURIComponent(q)}`).then(r=>r.json()).then(d => setSuggest(d.items||[])) }, 200)
     return () => clearTimeout(t)
   }, [q])
+  // Lock body scroll while the mobile menu drawer is open
+  useEffect(() => {
+    document.body.style.overflow = mobileOpen ? 'hidden' : ''
+    return () => { document.body.style.overflow = '' }
+  }, [mobileOpen])
 
   const submitSearch = (e) => { e.preventDefault(); if (q.trim()) { router.push(`/products?q=${encodeURIComponent(q.trim())}`); setOpenSearch(false); setMobileOpen(false) } }
   const isAdmin = profile?.role === 'admin'
+  const openCart = () => window.dispatchEvent(new Event('cart:open'))
 
   return (
     <header className="sticky top-0 z-40 bg-background/95 backdrop-blur border-b border-border/60">
@@ -88,7 +94,7 @@ export default function SiteHeader() {
             <button aria-label="Search" onClick={()=>setOpenSearch(v=>!v)} className="p-2 hover:opacity-70"><Search className="h-5 w-5"/></button>
             <Link href={user ? '/account' : '/login'} aria-label="Account" className="p-2 hover:opacity-70"><User className="h-5 w-5"/></Link>
             <Link href="/wishlist" aria-label="Wishlist" className="hidden sm:inline-flex p-2 hover:opacity-70"><Heart className="h-5 w-5"/></Link>
-            <Link href="/cart" aria-label="Cart" className="relative p-2 hover:opacity-70"><ShoppingBag className="h-5 w-5"/>{cartCount>0 && <span className="absolute -top-0.5 -right-0.5 bg-gold-500 text-primary-foreground rounded-full text-[10px] w-5 h-5 grid place-items-center font-medium">{cartCount}</span>}</Link>
+            <button aria-label="Cart" onClick={openCart} className="relative p-2 hover:opacity-70"><ShoppingBag className="h-5 w-5"/>{cartCount>0 && <span className="absolute -top-0.5 -right-0.5 bg-gold-500 text-primary-foreground rounded-full text-[10px] w-5 h-5 grid place-items-center font-medium">{cartCount}</span>}</button>
             {isAdmin && <Link href="/admin" className="hidden lg:inline-flex text-xs uppercase tracking-widest ml-2 px-3 py-2 border border-gold-500 text-gold-600 rounded-sm hover:bg-gold-500 hover:text-white transition">Admin</Link>}
           </div>
         </div>
@@ -106,25 +112,34 @@ export default function SiteHeader() {
           </div>
         )}
       </div>
-      {mobileOpen && (
-        <div className="fixed inset-0 z-50 bg-background md:hidden overflow-y-auto">
-          <div className="container-tight flex items-center justify-between h-16 border-b border-border">
-            <BrandLogo variant="light" size="sm"/>
-            <button onClick={()=>setMobileOpen(false)} aria-label="Close"><X className="h-6 w-6"/></button>
-          </div>
-          <nav className="flex flex-col gap-1 p-4 text-lg">
-            {NAV.map(n => (
-              <div key={n.label}>
-                <Link href={n.href} onClick={()=>setMobileOpen(false)} className="block py-3 border-b border-border">{n.label}</Link>
-                {n.subs && <div className="pl-4">{n.subs.map(([l,s]) => <Link key={s} href={`/products?category=${s}`} onClick={()=>setMobileOpen(false)} className="block py-2 text-sm text-muted-foreground">{l}</Link>)}</div>}
-              </div>
-            ))}
-            <Link href={user ? '/account' : '/login'} onClick={()=>setMobileOpen(false)} className="py-3 border-b border-border">Account</Link>
-            <Link href="/wishlist" onClick={()=>setMobileOpen(false)} className="py-3 border-b border-border">Wishlist</Link>
-            {isAdmin && <Link href="/admin" onClick={()=>setMobileOpen(false)} className="py-3 border-b border-border text-gold-600">Admin Panel</Link>}
-          </nav>
+
+      {/* Backdrop overlay */}
+      <div
+        className={`fixed inset-0 z-40 bg-black/50 md:hidden transition-opacity duration-300 ${mobileOpen ? 'opacity-100 pointer-events-auto' : 'opacity-0 pointer-events-none'}`}
+        onClick={()=>setMobileOpen(false)}
+        aria-hidden="true"
+      />
+
+      {/* Mobile menu drawer — slides in from the LEFT */}
+      <div
+        className={`fixed inset-y-0 left-0 z-50 w-[85%] max-w-sm bg-background md:hidden overflow-y-auto shadow-2xl transform transition-transform duration-300 ease-out ${mobileOpen ? 'translate-x-0' : '-translate-x-full'}`}
+      >
+        <div className="container-tight flex items-center justify-between h-16 border-b border-border">
+          <BrandLogo variant="light" size="sm"/>
+          <button onClick={()=>setMobileOpen(false)} aria-label="Close" className="p-2 -mr-2"><X className="h-6 w-6"/></button>
         </div>
-      )}
+        <nav className="flex flex-col gap-1 p-4 text-lg">
+          {NAV.map(n => (
+            <div key={n.label}>
+              <Link href={n.href} onClick={()=>setMobileOpen(false)} className="block py-3 border-b border-border">{n.label}</Link>
+              {n.subs && <div className="pl-4">{n.subs.map(([l,s]) => <Link key={s} href={`/products?category=${s}`} onClick={()=>setMobileOpen(false)} className="block py-2 text-sm text-muted-foreground">{l}</Link>)}</div>}
+            </div>
+          ))}
+          <Link href={user ? '/account' : '/login'} onClick={()=>setMobileOpen(false)} className="py-3 border-b border-border">Account</Link>
+          <Link href="/wishlist" onClick={()=>setMobileOpen(false)} className="py-3 border-b border-border">Wishlist</Link>
+          {isAdmin && <Link href="/admin" onClick={()=>setMobileOpen(false)} className="py-3 border-b border-border text-gold-600">Admin Panel</Link>}
+        </nav>
+      </div>
     </header>
   )
 }
