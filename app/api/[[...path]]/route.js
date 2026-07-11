@@ -6,7 +6,7 @@ import { getSupabaseAdmin } from '@/lib/supabase/admin'
 import { rateLimit, clientIp } from '@/lib/rate-limit'
 import { orderNumber } from '@/lib/format'
 import { sendOrderConfirmation, sendStatusUpdate, sendLowStockAlert } from '@/lib/email'
-import { authSchema, checkoutSchema, productSchema, reviewSchema } from '@/lib/validators'
+import { authSchema, checkoutSchema, productSchema, reviewSchema, adminReviewSchema } from '@/lib/validators'
 
 function cors(res) {
   res.headers.set('Access-Control-Allow-Origin', process.env.CORS_ORIGINS || '*')
@@ -220,7 +220,7 @@ async function handler(request, { params }) {
       const { data: p, error } = await admin.from('products').select('*').eq('slug', slug).eq('status','published').single()
       if (error || !p) return json({ error: 'Not found' }, 404)
       const { data: related } = await admin.from('products').select('id,name,slug,price,discount_price,images,rating_avg').eq('category_id', p.category_id).eq('status','published').neq('id', p.id).limit(6)
-      const { data: reviews } = await admin.from('reviews').select('id,rating,title,body,is_verified,created_at,user_id').eq('product_id', p.id).order('created_at', { ascending: false }).limit(20)
+      const { data: reviews } = await admin.from('reviews').select('id,rating,title,body,is_verified,created_at,user_id,reviewer_name,is_admin_added').eq('product_id', p.id).order('created_at', { ascending: false }).limit(20)
       return json({ product: p, related: related || [], reviews: reviews || [] })
     }
 
@@ -556,6 +556,48 @@ async function handler(request, { params }) {
         const id = path[2]
         await db.from('products').delete().eq('id', id)
         await audit(adm, 'delete', 'product', id, null)
+        return json({ ok: true })
+      }
+
+      // Reviews (admin-managed — lets store build credibility before real reviews come in)
+      if (route === '/admin/reviews' && method === 'GET') {
+        const { data } = await db.from('reviews').select('*, products(name,slug)').order('created_at', { ascending: false }).limit(200)
+        return json({ reviews: data || [] })
+      }
+      if (route === '/admin/reviews' && method === 'POST') {
+        const body = await request.json()
+        const p = adminReviewSchema.safeParse(body); if (!p.success) return json({ error: 'Invalid', details: p.error.flatten() }, 400)
+        const payload = { ...p.data, user_id: null, is_admin_added: true, is_verified: false }
+        if (!payload.created_at) delete payload.created_at
+        const { data, error } = await db.from('reviews').insert(payload).select().single()
+        if (error) return json({ error: error.message }, 400)
+        const { data: allR } = await db.from('reviews').select('rating').eq('product_id', p.data.product_id)
+        const avg = allR.length ? allR.reduce((s,r)=>s+r.rating,0)/allR.length : 0
+        await db.from('products').update({ rating_avg: Math.round(avg*100)/100, rating_count: allR.length }).eq('id', p.data.product_id)
+        await audit(adm, 'create', 'review', data.id, p.data)
+        return json({ review: data })
+      }
+      if (route.startsWith('/admin/reviews/') && method === 'PATCH') {
+        const id = path[2]
+        const body = await request.json()
+        const { data, error } = await db.from('reviews').update(body).eq('id', id).select().single()
+        if (error) return json({ error: error.message }, 400)
+        const { data: allR } = await db.from('reviews').select('rating').eq('product_id', data.product_id)
+        const avg = allR.length ? allR.reduce((s,r)=>s+r.rating,0)/allR.length : 0
+        await db.from('products').update({ rating_avg: Math.round(avg*100)/100, rating_count: allR.length }).eq('id', data.product_id)
+        await audit(adm, 'update', 'review', id, body)
+        return json({ review: data })
+      }
+      if (route.startsWith('/admin/reviews/') && method === 'DELETE') {
+        const id = path[2]
+        const { data: existing } = await db.from('reviews').select('product_id').eq('id', id).single()
+        await db.from('reviews').delete().eq('id', id)
+        if (existing?.product_id) {
+          const { data: allR } = await db.from('reviews').select('rating').eq('product_id', existing.product_id)
+          const avg = allR.length ? allR.reduce((s,r)=>s+r.rating,0)/allR.length : 0
+          await db.from('products').update({ rating_avg: Math.round(avg*100)/100, rating_count: allR.length }).eq('id', existing.product_id)
+        }
+        await audit(adm, 'delete', 'review', id, null)
         return json({ ok: true })
       }
 
