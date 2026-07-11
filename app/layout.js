@@ -2,6 +2,7 @@ import './globals.css'
 import { Cormorant_Garamond, Inter, Noto_Serif_Devanagari } from 'next/font/google'
 import { Toaster } from 'sonner'
 import Analytics from '@/components/analytics'
+import CartDrawer from '@/components/cart-drawer'
 import { getSupabaseAdmin } from '@/lib/supabase/admin'
 
 const serif = Cormorant_Garamond({ subsets: ['latin'], weight: ['400','500','600','700'], variable: '--font-serif', display: 'swap' })
@@ -41,6 +42,7 @@ export default async function RootLayout({ children }) {
     <html lang="en" className={`${serif.variable} ${sans.variable} ${devanagari.variable}`} suppressHydrationWarning>
       <body className="min-h-screen bg-background text-foreground antialiased font-sans" suppressHydrationWarning>
         {children}
+        <CartDrawer/>
         <Toaster position="top-center" richColors closeButton />
         <Analytics metaPixelId={analytics?.meta_pixel_id} ga4Id={analytics?.ga4_id} />
       </body>
