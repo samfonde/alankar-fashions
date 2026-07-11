@@ -38,6 +38,7 @@ function PDP({ slug }) {
     else cart.push({ key, product_id: p.id, name: p.name, slug: p.slug, image: p.images?.[0], price: p.discount_price || p.price, size, color, quantity: qty })
     localStorage.setItem('cart', JSON.stringify(cart))
     window.dispatchEvent(new Event('cart:updated'))
+    window.dispatchEvent(new Event('cart:open'))
     toast.success('Added to bag')
   }
   const buyNow = () => { addToCart(); router.push('/checkout') }
@@ -51,7 +52,7 @@ function PDP({ slug }) {
   return (
     <div>
       <SiteHeader/>
-      <main className="container-tight py-6 md:py-10">
+      <main className="container-tight py-6 md:py-10 pb-28 md:pb-10">
         <div className="text-xs text-muted-foreground mb-4 flex items-center gap-1">Home <ChevronRight className="h-3 w-3"/> Shop <ChevronRight className="h-3 w-3"/> <span className="text-foreground">{p.name}</span></div>
         <div className="grid md:grid-cols-2 gap-6 md:gap-12">
           <div>
@@ -67,7 +68,7 @@ function PDP({ slug }) {
             )}
           </div>
           <div>
-            <div className="text-xs uppercase tracking-widest text-muted-foreground">{p.brand || 'Aurelia'}</div>
+            <div className="text-xs uppercase tracking-widest text-muted-foreground">{p.brand || 'Alankar Fashions'}</div>
             <h1 className="font-serif text-3xl md:text-4xl mt-2">{p.name}</h1>
             {p.rating_avg > 0 && <div className="text-sm text-muted-foreground mt-2">★ {Number(p.rating_avg).toFixed(1)} · {p.rating_count} reviews</div>}
             <div className="flex items-baseline gap-3 mt-5">
@@ -81,7 +82,7 @@ function PDP({ slug }) {
                 <div className="text-xs uppercase tracking-widest mb-2">Color: <span className="text-muted-foreground">{color}</span></div>
                 <div className="flex flex-wrap gap-2">
                   {p.colors.map(c => (
-                    <button key={c} onClick={()=>setColor(c)} className={`px-3 py-1.5 text-xs border ${color===c?'bg-primary text-primary-foreground border-primary':'border-border'}`}>{c}</button>
+                    <button key={c} onClick={()=>setColor(c)} className={`min-h-[44px] px-4 py-2 text-xs border ${color===c?'bg-primary text-primary-foreground border-primary':'border-border'}`}>{c}</button>
                   ))}
                 </div>
               </div>
@@ -91,7 +92,7 @@ function PDP({ slug }) {
                 <div className="text-xs uppercase tracking-widest mb-2">Size</div>
                 <div className="flex flex-wrap gap-2">
                   {p.sizes.map(s => (
-                    <button key={s} onClick={()=>setSize(s)} className={`min-w-[3rem] px-3 py-2 text-xs border ${size===s?'bg-primary text-primary-foreground border-primary':'border-border'}`}>{s}</button>
+                    <button key={s} onClick={()=>setSize(s)} className={`min-w-[3rem] min-h-[44px] px-4 py-2 text-xs border ${size===s?'bg-primary text-primary-foreground border-primary':'border-border'}`}>{s}</button>
                   ))}
                 </div>
               </div>
@@ -99,22 +100,23 @@ function PDP({ slug }) {
             <div className="mt-5">
               <div className="text-xs uppercase tracking-widest mb-2">Quantity</div>
               <div className="inline-flex items-center border border-border">
-                <button onClick={()=>setQty(q=>Math.max(1,q-1))} className="w-10 h-10 grid place-items-center">−</button>
-                <div className="w-10 h-10 grid place-items-center border-x border-border">{qty}</div>
-                <button onClick={()=>setQty(q=>Math.min(20,q+1))} className="w-10 h-10 grid place-items-center">+</button>
+                <button onClick={()=>setQty(q=>Math.max(1,q-1))} className="w-11 h-11 grid place-items-center text-lg">−</button>
+                <div className="w-11 h-11 grid place-items-center border-x border-border">{qty}</div>
+                <button onClick={()=>setQty(q=>Math.min(20,q+1))} className="w-11 h-11 grid place-items-center text-lg">+</button>
               </div>
             </div>
 
-            <div className="mt-6 flex flex-col sm:flex-row gap-3">
+            {/* Desktop / tablet buttons — hidden on mobile, sticky bar below is used instead */}
+            <div className="mt-6 hidden sm:flex flex-row gap-3">
               <button onClick={addToCart} disabled={!inStock} className="flex-1 h-12 bg-primary text-primary-foreground text-sm uppercase tracking-widest disabled:opacity-50">{inStock?'Add to Bag':'Out of Stock'}</button>
               <button onClick={buyNow} disabled={!inStock} className="flex-1 h-12 border border-primary text-sm uppercase tracking-widest disabled:opacity-50">Buy Now</button>
-              <button onClick={toggleWish} className="h-12 w-12 border border-border grid place-items-center" aria-label="Wishlist"><Heart className="h-4 w-4"/></button>
+              <button onClick={toggleWish} className="h-12 w-12 border border-border grid place-items-center shrink-0" aria-label="Wishlist"><Heart className="h-4 w-4"/></button>
             </div>
 
             <div className="grid grid-cols-3 gap-3 mt-6 text-xs">
-              <div className="flex items-center gap-2"><Truck className="h-4 w-4"/> Free ship ₹999+</div>
-              <div className="flex items-center gap-2"><Undo2 className="h-4 w-4"/> 15-day returns</div>
-              <div className="flex items-center gap-2"><Shield className="h-4 w-4"/> Secure checkout</div>
+              <div className="flex items-center gap-2"><Truck className="h-4 w-4 shrink-0"/> <span>Free ship ₹999+</span></div>
+              <div className="flex items-center gap-2"><Undo2 className="h-4 w-4 shrink-0"/> <span>15-day returns</span></div>
+              <div className="flex items-center gap-2"><Shield className="h-4 w-4 shrink-0"/> <span>Secure checkout</span></div>
             </div>
 
             <div className="mt-8 border-t border-border/60 pt-6">
@@ -127,7 +129,12 @@ function PDP({ slug }) {
                 {tab==='desc' && <p>{p.description}</p>}
                 {tab==='details' && <ul className="list-disc pl-5 space-y-1"><li>SKU: {p.sku}</li><li>Sizes: {p.sizes?.join(', ') || 'One Size'}</li><li>Colors: {p.colors?.join(', ') || '—'}</li><li>Brand: {p.brand}</li></ul>}
                 {tab==='reviews' && (data.reviews?.length ? data.reviews.map(r => (
-                  <div key={r.id} className="border-b border-border/60 py-3"><div className="text-foreground">★ {r.rating} {r.is_verified && <span className="text-emerald-700 text-xs ml-2">Verified Purchase</span>}</div><div className="font-medium text-foreground mt-1">{r.title}</div><div>{r.body}</div></div>
+                  <div key={r.id} className="border-b border-border/60 py-3">
+                    <div className="text-foreground">★ {r.rating} {r.is_verified && <span className="text-emerald-700 text-xs ml-2">Verified Purchase</span>}</div>
+                    <div className="font-medium text-foreground mt-1">{r.title}</div>
+                    <div className="text-xs text-muted-foreground mt-0.5">{r.reviewer_name || 'Alankar Customer'}</div>
+                    <div className="mt-1">{r.body}</div>
+                  </div>
                 )) : <p>No reviews yet.</p>)}
               </div>
             </div>
@@ -167,6 +174,13 @@ function PDP({ slug }) {
       </main>
       <SiteFooter/>
       <WhatsAppFab/>
+
+      {/* Sticky mobile-only Add to Bag / Buy Now bar */}
+      <div className="sm:hidden fixed bottom-0 inset-x-0 z-30 bg-background border-t border-border p-3 flex gap-2 shadow-[0_-4px_12px_rgba(0,0,0,0.06)]">
+        <button onClick={toggleWish} className="h-12 w-12 border border-border grid place-items-center shrink-0" aria-label="Wishlist"><Heart className="h-5 w-5"/></button>
+        <button onClick={addToCart} disabled={!inStock} className="flex-1 h-12 bg-primary text-primary-foreground text-sm uppercase tracking-widest disabled:opacity-50">{inStock?'Add to Bag':'Out of Stock'}</button>
+        <button onClick={buyNow} disabled={!inStock} className="flex-1 h-12 border border-primary text-sm uppercase tracking-widest disabled:opacity-50">Buy Now</button>
+      </div>
     </div>
   )
 }
