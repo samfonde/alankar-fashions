@@ -3,12 +3,12 @@ import { createServerClient } from '@supabase/ssr'
 
 export async function middleware(request) {
   let response = NextResponse.next({ request: { headers: request.headers } })
-  // Session refresh (rotates refresh token)
-  try {
-    const supabase = createServerClient(
-      process.env.NEXT_PUBLIC_SUPABASE_URL,
-      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY,
-      {
+  // Session refresh (rotates refresh token) — skip if env vars missing
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL
+  const key = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
+  if (url && key) {
+    try {
+      const supabase = createServerClient(url, key, {
         cookies: {
           getAll() { return request.cookies.getAll() },
           setAll(cookiesToSet) {
@@ -17,10 +17,10 @@ export async function middleware(request) {
             cookiesToSet.forEach(({ name, value, options }) => response.cookies.set(name, value, options))
           },
         },
-      }
-    )
-    await supabase.auth.getUser()
-  } catch {}
+      })
+      await supabase.auth.getUser()
+    } catch {}
+  }
   // Security headers
   response.headers.set('X-Frame-Options', 'SAMEORIGIN')
   response.headers.set('X-Content-Type-Options', 'nosniff')
