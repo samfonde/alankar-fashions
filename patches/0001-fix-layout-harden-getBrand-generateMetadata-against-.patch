@@ -1,0 +1,1249 @@
+From 510a30dedb670f0cf7b2894e9935d7eff9293ad4 Mon Sep 17 00:00:00 2001
+From: Alankar Changes <changes@alankarfashions.com>
+Date: Sun, 12 Jul 2026 14:13:16 +0000
+Subject: [PATCH] fix(layout): harden getBrand/generateMetadata against
+ server-render crash
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+- getSupabaseAdmin() now returns null instead of throwing when env vars missing
+- getBrand() defensively coerces jsonb column values to plain objects (handles null/string/array edge cases)
+- generateMetadata() wrapped in try/catch with sensible fallback metadata
+- Validate metadataBase URL with fallback to production URL
+- Root cause: on fresh page loads, generateMetadata + RootLayout both run server-side
+  and any malformed settings.value jsonb (e.g. null, array, or string in brand/seo/analytics
+  keys) caused prop access downstream in <Analytics/> Script rendering to throw during
+  hydration. Now every layer returns safe defaults.
+
+fix(header): mobile menu now correctly slides in from LEFT with dark backdrop
+
+- Moved drawer + backdrop out of <header sticky> stacking context (was nested inside
+  the sticky positioned parent, causing z-index/fixed positioning quirks on iOS)
+- Drawer is now a sibling to header inside SiteHeader fragment
+- Backdrop z-[60], drawer z-[70] for reliable stacking
+- Body scroll lock preserved via existing useEffect
+- Added aria-hidden and data-testids for accessibility & testing
+
+feat(admin): remove Admin button from public storefront header (desktop + mobile)
+
+- Removes admin link from customer-facing site header (both desktop nav and mobile drawer)
+- Admins can still access /admin directly by URL — panel itself is untouched
+
+feat(payment): Cash on Delivery (COD) end-to-end
+
+- Checkout page: payment method selector (Online vs COD), COD eligibility rules,
+  handling fee display, min/max order thresholds
+- API /api/checkout/create: skips Razorpay when payment_method=cod; creates order with
+  status=processing, payment_status=cod_pending; sends dedicated COD confirmation email
+- New email template (lib/email.js: sendCODOrderConfirmation) with 'Pay on Delivery'
+  language, cash amount emphasized, no 'payment received' wording
+- Public /api/cod-config endpoint reads settings.cod for the checkout page
+- Admin settings: new COD section with enable toggle, handling fee, min/max order limits
+- Admin orders: COD badge on listing, 'Mark Payment Collected' button on detail modal;
+  new /api/admin/orders/:id/cod-collected endpoint (marks paid + decrements stock now)
+- Order detail page: shows 'Pay on Delivery' banner, correct payment status labels,
+  landmark & alternate phone in shipping address
+
+feat(checkout): expanded fields for Indian addresses
+
+- Added alternate phone, landmark, delivery notes/instructions, billing-same-as-shipping
+- Address schema in lib/validators.js accepts alt_phone and landmark
+
+feat(auth): Continue with Google (Supabase OAuth)
+
+- Google button on both login and signup pages (with Google logo SVG)
+- OAuth redirect to /auth/callback which exchanges the code, then upserts a
+  profiles row for new Google users so admin customer list & downstream flows work
+- Uses next param for post-login redirect target
+
+feat(admin/products): jewellery-specific fields
+
+- Material / metal type, weight (grams), care instructions
+- Low-stock threshold per product, set_group (link related items)
+- Bestseller flag (separate from featured/new/trending)
+- Validators updated to accept new fields
+
+feat(admin/categories): full CRUD with SEO & branding
+
+- Rewrote page with banner image, short description, is_featured toggle, edit support
+- API PATCH via upsert on categories POST endpoint (existing id triggers update)
+
+migrations: additive-only feature migration
+
+- supabase/migration_features.sql — ONLY adds new columns (payment_method, cod_fee,
+  notes on orders; material/weight_grams/care_instructions/low_stock_threshold/
+  set_group/is_bestseller on products; banner_url/description/is_featured on categories)
+- Seeds sensible COD default (enabled, ₹0 fee, ₹0 min, ₹15,000 max)
+- Never drops, never alters existing data
+- Exposed at /api/setup/migration-features for easy copy-paste to Supabase SQL editor
+---
+ .gitignore                      |   1 +
+ app/admin/categories/page.js    |  79 +++++++++++++++++----
+ app/admin/orders/page.js        |  14 +++-
+ app/admin/products/page.js      |  13 ++--
+ app/admin/settings/page.js      |  22 ++++++
+ app/api/[[...path]]/route.js    |  98 ++++++++++++++++++++++++--
+ app/auth/callback/route.js      |  52 ++++++++++++++
+ app/checkout/page.js            | 121 ++++++++++++++++++++++++--------
+ app/layout.js                   |  69 ++++++++++++------
+ app/login/page.js               |  29 ++++++--
+ app/orders/[id]/page.js         |  19 +++--
+ app/signup/page.js              |  26 +++++--
+ components/site-header.js       |  19 +++--
+ lib/email.js                    |  11 +++
+ lib/supabase/admin.js           |  17 +++--
+ lib/validators.js               |  10 +++
+ supabase/migration_features.sql |  41 +++++++++++
+ 17 files changed, 536 insertions(+), 105 deletions(-)
+ create mode 100644 app/auth/callback/route.js
+ create mode 100644 supabase/migration_features.sql
+
+diff --git a/.gitignore b/.gitignore
+index 066842b..9760535 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -46,3 +46,4 @@ scripts_*.mjs
+ *.log
+ node_modules/@next/swc-linux-arm64-gnu/next-swc.linux-arm64-gnu.node
+ node_modules/@next/swc-linux-arm64-musl/next-swc.linux-arm64-musl.node
++/.env.local
+diff --git a/app/admin/categories/page.js b/app/admin/categories/page.js
+index 09651d0..f87ad87 100644
+--- a/app/admin/categories/page.js
++++ b/app/admin/categories/page.js
+@@ -1,6 +1,6 @@
+ 'use client'
+ import { useEffect, useState } from 'react'
+-import { Plus, Trash2, X } from 'lucide-react'
++import { Plus, Trash2, X, Upload } from 'lucide-react'
+ import { toast } from 'sonner'
+ 
+ export default function AdminCategories(){
+@@ -8,34 +8,85 @@ export default function AdminCategories(){
+   const [form,setForm] = useState(null)
+   const load = () => fetch('/api/admin/categories').then(r=>r.json()).then(d=>setItems(d.categories||[]))
+   useEffect(() => { load() }, [])
+-  const save = async () => { if (!form.name || !form.slug) return toast.error('Name and slug required'); const r = await fetch('/api/admin/categories', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(form) }); if (!r.ok) { const d = await r.json(); return toast.error(d.error||'Failed') } toast.success('Saved'); setForm(null); load() }
++
++  const upload = async (file) => {
++    const b64 = await new Promise((res) => { const fr = new FileReader(); fr.onload = () => res(fr.result); fr.readAsDataURL(file) })
++    const r = await fetch('/api/admin/upload', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ file: b64, filename: file.name, contentType: file.type }) })
++    const d = await r.json()
++    if (!r.ok) { toast.error(d.error||'Upload failed'); return null }
++    return d.url
++  }
++
++  const save = async () => {
++    if (!form.name || !form.slug) return toast.error('Name and slug required')
++    const r = await fetch('/api/admin/categories', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(form) })
++    if (!r.ok) { const d = await r.json(); return toast.error(d.error||'Failed') }
++    toast.success('Saved'); setForm(null); load()
++  }
+   const del = async (id) => { if(!confirm('Delete category?')) return; await fetch(`/api/admin/categories/${id}`, { method:'DELETE'}); load() }
++
+   return (
+     <div className="space-y-4">
+       <div className="flex items-center justify-between">
+         <div><h1 className="font-serif text-2xl">Categories</h1><p className="text-sm text-muted-foreground">{items.length} total</p></div>
+-        <button onClick={()=>setForm({ name:'', slug:'', parent_id:null, image_url:'', sort_order:0 })} className="inline-flex items-center gap-2 h-10 px-4 bg-primary text-primary-foreground text-xs uppercase tracking-widest"><Plus className="h-4 w-4"/> New</button>
++        <button onClick={()=>setForm({ name:'', slug:'', parent_id:null, image_url:'', banner_url:'', description:'', is_featured:false, sort_order:0 })} className="inline-flex items-center gap-2 h-10 px-4 bg-primary text-primary-foreground text-xs uppercase tracking-widest" data-testid="admin-cat-new-btn"><Plus className="h-4 w-4"/> New</button>
+       </div>
+-      <div className="bg-card border border-border">
++      <div className="bg-card border border-border overflow-x-auto">
+         <table className="w-full text-sm">
+-          <thead className="bg-muted/50 text-left"><tr><th className="p-3">Name</th><th className="p-3">Slug</th><th className="p-3">Sort</th><th className="p-3"></th></tr></thead>
+-          <tbody className="divide-y divide-border">{items.map(c=>(<tr key={c.id}><td className="p-3">{c.name}</td><td className="p-3 text-muted-foreground">/{c.slug}</td><td className="p-3">{c.sort_order}</td><td className="p-3 text-right"><button onClick={()=>del(c.id)} className="text-destructive"><Trash2 className="h-4 w-4"/></button></td></tr>))}</tbody>
++          <thead className="bg-muted/50 text-left"><tr><th className="p-3"></th><th className="p-3">Name</th><th className="p-3">Slug</th><th className="p-3">Featured</th><th className="p-3">Sort</th><th className="p-3"></th></tr></thead>
++          <tbody className="divide-y divide-border">
++            {items.map(c=>(
++              <tr key={c.id}>
++                <td className="p-2">{c.image_url ? <img src={c.image_url} alt="" className="w-10 h-10 object-cover"/> : <div className="w-10 h-10 bg-muted"/>}</td>
++                <td className="p-3">
++                  <div className="font-medium">{c.name}</div>
++                  {c.description && <div className="text-xs text-muted-foreground line-clamp-1 max-w-xs">{c.description}</div>}
++                </td>
++                <td className="p-3 text-muted-foreground">/{c.slug}</td>
++                <td className="p-3">{c.is_featured ? <span className="text-xs px-2 py-1 bg-emerald-50 text-emerald-800">Yes</span> : <span className="text-muted-foreground">—</span>}</td>
++                <td className="p-3">{c.sort_order}</td>
++                <td className="p-3 text-right"><button onClick={()=>setForm({ ...c })} className="text-primary p-2 hover:bg-muted mr-1" data-testid={`admin-cat-edit-${c.id}`}>Edit</button><button onClick={()=>del(c.id)} className="text-destructive p-2 hover:bg-muted" data-testid={`admin-cat-del-${c.id}`}><Trash2 className="h-4 w-4"/></button></td>
++              </tr>
++            ))}
++            {!items.length && <tr><td colSpan={6} className="p-8 text-center text-muted-foreground">No categories</td></tr>}
++          </tbody>
+         </table>
+       </div>
+       {form && (
+-        <div className="fixed inset-0 bg-black/50 z-50 grid place-items-center p-4">
+-          <div className="bg-background w-full max-w-md border border-border p-5">
+-            <div className="flex justify-between items-center mb-4"><h2 className="font-serif text-xl">New Category</h2><button onClick={()=>setForm(null)}><X className="h-5 w-5"/></button></div>
++        <div className="fixed inset-0 bg-black/50 z-50 grid place-items-center p-4 overflow-y-auto">
++          <div className="bg-background w-full max-w-lg border border-border p-5 max-h-[90vh] overflow-y-auto">
++            <div className="flex justify-between items-center mb-4"><h2 className="font-serif text-xl">{form.id ? 'Edit Category':'New Category'}</h2><button onClick={()=>setForm(null)}><X className="h-5 w-5"/></button></div>
+             <div className="space-y-3">
+-              <input placeholder="Name" value={form.name} onChange={e=>setForm({...form,name:e.target.value, slug: e.target.value.toLowerCase().replace(/[^a-z0-9]+/g,'-')})} className="w-full h-10 px-3 border border-border"/>
+-              <input placeholder="Slug" value={form.slug} onChange={e=>setForm({...form,slug:e.target.value})} className="w-full h-10 px-3 border border-border"/>
+-              <input placeholder="Image URL (optional)" value={form.image_url} onChange={e=>setForm({...form,image_url:e.target.value})} className="w-full h-10 px-3 border border-border"/>
+-              <input type="number" placeholder="Sort order" value={form.sort_order} onChange={e=>setForm({...form,sort_order:Number(e.target.value)})} className="w-full h-10 px-3 border border-border"/>
++              <F label="Name"><input placeholder="e.g. Kolhapuri Saj" value={form.name} onChange={e=>setForm({...form,name:e.target.value, slug: form.id?form.slug:e.target.value.toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-|-$/g,'')})} className="w-full h-10 px-3 border border-border" data-testid="admin-cat-name"/></F>
++              <F label="Slug"><input placeholder="kolhapuri-saj" value={form.slug} onChange={e=>setForm({...form,slug:e.target.value})} className="w-full h-10 px-3 border border-border" data-testid="admin-cat-slug"/></F>
++              <F label="Short description (helps SEO — 1–3 sentences about this style)">
++                <textarea rows={3} value={form.description||''} onChange={e=>setForm({...form,description:e.target.value})} placeholder="Kolhapuri Saj is a traditional Maharashtrian necklace…" className="w-full px-3 py-2 border border-border" data-testid="admin-cat-desc"/>
++              </F>
++              <F label="Thumbnail image (used in navigation & grids)">
++                <div className="flex items-center gap-3">
++                  {form.image_url ? <img src={form.image_url} alt="" className="h-16 w-16 object-cover border border-border"/> : <div className="h-16 w-16 border border-dashed border-border"/>}
++                  <input placeholder="Paste URL" value={form.image_url||''} onChange={e=>setForm({...form,image_url:e.target.value})} className="flex-1 h-10 px-3 border border-border" data-testid="admin-cat-image"/>
++                  <label className="inline-flex items-center gap-1 h-10 px-3 border border-border cursor-pointer text-xs uppercase tracking-widest"><Upload className="h-4 w-4"/><input type="file" accept="image/*" hidden onChange={async e => { const f = e.target.files?.[0]; if (!f) return; const url = await upload(f); if (url) setForm({...form, image_url: url}) }}/></label>
++                </div>
++              </F>
++              <F label="Banner/hero image (shown at top of category page)">
++                <div className="flex items-center gap-3">
++                  {form.banner_url ? <img src={form.banner_url} alt="" className="h-16 w-32 object-cover border border-border"/> : <div className="h-16 w-32 border border-dashed border-border"/>}
++                  <input placeholder="Paste URL" value={form.banner_url||''} onChange={e=>setForm({...form,banner_url:e.target.value})} className="flex-1 h-10 px-3 border border-border" data-testid="admin-cat-banner"/>
++                  <label className="inline-flex items-center gap-1 h-10 px-3 border border-border cursor-pointer text-xs uppercase tracking-widest"><Upload className="h-4 w-4"/><input type="file" accept="image/*" hidden onChange={async e => { const f = e.target.files?.[0]; if (!f) return; const url = await upload(f); if (url) setForm({...form, banner_url: url}) }}/></label>
++                </div>
++              </F>
++              <div className="flex items-center gap-4">
++                <F label="Sort order"><input type="number" value={form.sort_order||0} onChange={e=>setForm({...form,sort_order:Number(e.target.value)})} className="w-24 h-10 px-3 border border-border" data-testid="admin-cat-sort"/></F>
++                <label className="inline-flex items-center gap-2 text-sm mt-6"><input type="checkbox" checked={!!form.is_featured} onChange={e=>setForm({...form,is_featured:e.target.checked})} data-testid="admin-cat-featured"/> Featured (prioritize in nav & homepage)</label>
++              </div>
+             </div>
+-            <div className="flex justify-end gap-2 mt-5"><button onClick={()=>setForm(null)} className="h-10 px-4 border border-border text-xs uppercase tracking-widest">Cancel</button><button onClick={save} className="h-10 px-4 bg-primary text-primary-foreground text-xs uppercase tracking-widest">Save</button></div>
++            <div className="flex justify-end gap-2 mt-5"><button onClick={()=>setForm(null)} className="h-10 px-4 border border-border text-xs uppercase tracking-widest">Cancel</button><button onClick={save} className="h-10 px-4 bg-primary text-primary-foreground text-xs uppercase tracking-widest" data-testid="admin-cat-save-btn">Save</button></div>
+           </div>
+         </div>
+       )}
+     </div>
+   )
+ }
++
++function F({ label, children }) { return <label className="block"><span className="text-xs uppercase tracking-widest text-muted-foreground">{label}</span><div className="mt-1">{children}</div></label> }
+diff --git a/app/admin/orders/page.js b/app/admin/orders/page.js
+index 6934b45..b5cbd88 100644
+--- a/app/admin/orders/page.js
++++ b/app/admin/orders/page.js
+@@ -13,6 +13,12 @@ export default function AdminOrders(){
+   const load = () => fetch('/api/admin/orders').then(r=>r.json()).then(d=>setItems(d.orders||[]))
+   useEffect(() => { load() }, [])
+   const updateStatus = async (id, status, note) => { const r = await fetch(`/api/admin/orders/${id}`, { method:'PATCH', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ status, note }) }); if (!r.ok) return toast.error('Failed'); toast.success(`Order updated: ${status}`); load(); if (detail) setDetail({...detail, status}) }
++  const markCodCollected = async (id) => {
++    if (!confirm('Mark COD payment as collected? This will decrement stock.')) return
++    const r = await fetch(`/api/admin/orders/${id}/cod-collected`, { method:'POST' })
++    if (!r.ok) { const d = await r.json(); return toast.error(d.error||'Failed') }
++    toast.success('Marked as paid'); load(); if (detail) setDetail({...detail, payment_status: 'paid'})
++  }
+   const filtered = items.filter(o => !filter || o.status === filter)
+   return (
+     <div className="space-y-4">
+@@ -30,7 +36,10 @@ export default function AdminOrders(){
+                 <td className="p-3"><div>{o.email}</div><div className="text-xs text-muted-foreground">{o.phone}</div></td>
+                 <td className="p-3 text-muted-foreground">{dateFmt(o.created_at)}</td>
+                 <td className="p-3">{inr(o.total)}</td>
+-                <td className="p-3"><span className={`text-xs px-2 py-1 ${o.payment_status==='paid'?'bg-emerald-50 text-emerald-800':'bg-amber-50 text-amber-800'}`}>{o.payment_status}</span></td>
++                <td className="p-3">
++                  <span className={`text-xs px-2 py-1 ${o.payment_status==='paid'?'bg-emerald-50 text-emerald-800':o.payment_status==='cod_pending'?'bg-orange-50 text-orange-800':'bg-amber-50 text-amber-800'}`}>{o.payment_status}</span>
++                  {o.payment_method === 'cod' && <span className="ml-1 text-[10px] px-1.5 py-0.5 bg-orange-100 text-orange-900 uppercase tracking-widest" data-testid={`order-cod-badge-${o.id}`}>COD</span>}
++                </td>
+                 <td className="p-3"><span className="text-xs uppercase tracking-widest">{o.status}</span></td>
+               </tr>
+             ))}
+@@ -65,6 +74,9 @@ export default function AdminOrders(){
+                 ))}
+               </div>
+               <div className="flex items-center gap-2 pt-3 border-t border-border">
++                {detail.payment_method === 'cod' && detail.payment_status !== 'paid' && (
++                  <button onClick={()=>markCodCollected(detail.id)} className="inline-flex items-center gap-2 h-9 px-3 bg-orange-600 text-white text-xs uppercase tracking-widest" data-testid="admin-mark-cod-collected">Mark Payment Collected</button>
++                )}
+                 <a href={`/api/invoice/${detail.id}`} target="_blank" rel="noopener" className="inline-flex items-center gap-2 h-9 px-3 border border-border text-xs uppercase tracking-widest">Invoice / Print</a>
+                 <a href={`https://wa.me/${(detail.phone||'').replace(/[^0-9]/g,'')}?text=${encodeURIComponent(`Hi ${detail.shipping_address?.name||''}! Your order ${detail.order_number} from Alankar Fashions is confirmed. Total: ₹${detail.total}. Thank you!`)}`} target="_blank" rel="noopener" className="inline-flex items-center gap-2 h-9 px-3 border border-border text-xs uppercase tracking-widest">WhatsApp Customer</a>
+               </div>
+diff --git a/app/admin/products/page.js b/app/admin/products/page.js
+index d4c0ef0..1fb3be8 100644
+--- a/app/admin/products/page.js
++++ b/app/admin/products/page.js
+@@ -4,7 +4,7 @@ import { inr } from '@/lib/format'
+ import { Plus, Pencil, Trash2, X, Upload } from 'lucide-react'
+ import { toast } from 'sonner'
+ 
+-const emptyP = { name:'', slug:'', description:'', price:0, discount_price:null, sku:'', images:[], category_id:null, stock:0, status:'published', is_featured:false, is_new:false, is_trending:false, brand:'Aurelia', sizes:[], colors:[], tags:[] }
++const emptyP = { name:'', slug:'', description:'', price:0, discount_price:null, sku:'', images:[], category_id:null, stock:0, status:'published', is_featured:false, is_new:false, is_trending:false, is_bestseller:false, brand:'Alankar Fashions', sizes:[], colors:[], tags:[], material:'', weight_grams:null, care_instructions:'', low_stock_threshold:5, set_group:'' }
+ 
+ export default function AdminProducts(){
+   const [items,setItems] = useState([])
+@@ -15,7 +15,7 @@ export default function AdminProducts(){
+   useEffect(() => { load() }, [])
+   const save = async () => {
+     if (!edit.name || !edit.slug || edit.price <= 0) return toast.error('Name, slug and price are required')
+-    const payload = { ...edit, price: Number(edit.price), discount_price: edit.discount_price ? Number(edit.discount_price):null, stock: Number(edit.stock||0), sizes: Array.isArray(edit.sizes)?edit.sizes:String(edit.sizes||'').split(',').map(s=>s.trim()).filter(Boolean), colors: Array.isArray(edit.colors)?edit.colors:String(edit.colors||'').split(',').map(s=>s.trim()).filter(Boolean), tags: Array.isArray(edit.tags)?edit.tags:String(edit.tags||'').split(',').map(s=>s.trim()).filter(Boolean) }
++    const payload = { ...edit, price: Number(edit.price), discount_price: edit.discount_price ? Number(edit.discount_price):null, stock: Number(edit.stock||0), weight_grams: edit.weight_grams ? Number(edit.weight_grams) : null, low_stock_threshold: edit.low_stock_threshold !== '' && edit.low_stock_threshold != null ? Number(edit.low_stock_threshold) : null, sizes: Array.isArray(edit.sizes)?edit.sizes:String(edit.sizes||'').split(',').map(s=>s.trim()).filter(Boolean), colors: Array.isArray(edit.colors)?edit.colors:String(edit.colors||'').split(',').map(s=>s.trim()).filter(Boolean), tags: Array.isArray(edit.tags)?edit.tags:String(edit.tags||'').split(',').map(s=>s.trim()).filter(Boolean) }
+     const url = edit.id ? `/api/admin/products/${edit.id}` : '/api/admin/products'
+     const method = edit.id ? 'PATCH' : 'POST'
+     const r = await fetch(url, { method, headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload) })
+@@ -81,6 +81,11 @@ export default function AdminProducts(){
+               <F label="Colors (comma separated)"><input value={Array.isArray(edit.colors)?edit.colors.join(','):edit.colors||''} onChange={e=>setEdit({...edit,colors:e.target.value})} className="w-full h-10 px-3 border border-border bg-background"/></F>
+               <F label="Tags"><input value={Array.isArray(edit.tags)?edit.tags.join(','):edit.tags||''} onChange={e=>setEdit({...edit,tags:e.target.value})} className="w-full h-10 px-3 border border-border bg-background"/></F>
+               <div className="md:col-span-2"><F label="Description"><textarea rows={4} value={edit.description||''} onChange={e=>setEdit({...edit,description:e.target.value})} className="w-full px-3 py-2 border border-border bg-background"/></F></div>
++              <F label="Material / Metal type"><input value={edit.material||''} onChange={e=>setEdit({...edit,material:e.target.value})} placeholder="e.g. Gold-plated brass, Oxidized silver, Kundan & pearl" className="w-full h-10 px-3 border border-border bg-background" data-testid="product-material"/></F>
++              <F label="Weight (grams, approx.)"><input type="number" step="0.1" value={edit.weight_grams||''} onChange={e=>setEdit({...edit,weight_grams:e.target.value})} placeholder="e.g. 45" className="w-full h-10 px-3 border border-border bg-background" data-testid="product-weight"/></F>
++              <div className="md:col-span-2"><F label="Care instructions"><textarea rows={2} value={edit.care_instructions||''} onChange={e=>setEdit({...edit,care_instructions:e.target.value})} placeholder="e.g. Avoid contact with water & perfume. Wipe clean with a soft cloth." className="w-full px-3 py-2 border border-border bg-background" data-testid="product-care"/></F></div>
++              <F label="Set group (link related items)"><input value={edit.set_group||''} onChange={e=>setEdit({...edit,set_group:e.target.value})} placeholder="e.g. kundan-bridal-set-A" className="w-full h-10 px-3 border border-border bg-background" data-testid="product-set-group"/></F>
++              <F label="Low-stock threshold (alert when stock ≤ this)"><input type="number" min="0" value={edit.low_stock_threshold ?? ''} onChange={e=>setEdit({...edit,low_stock_threshold:e.target.value})} placeholder="5" className="w-full h-10 px-3 border border-border bg-background" data-testid="product-low-stock"/></F>
+               <div className="md:col-span-2">
+                 <F label="Images">
+                   <div className="grid grid-cols-4 gap-2 mb-2">
+@@ -93,8 +98,8 @@ export default function AdminProducts(){
+                 </F>
+               </div>
+               <div className="md:col-span-2 flex flex-wrap gap-4">
+-                {[['is_featured','Featured'],['is_new','New Arrival'],['is_trending','Trending']].map(([k,l])=>(
+-                  <label key={k} className="inline-flex items-center gap-2 text-sm"><input type="checkbox" checked={!!edit[k]} onChange={e=>setEdit({...edit,[k]:e.target.checked})}/> {l}</label>
++                {[['is_featured','Featured'],['is_new','New Arrival'],['is_trending','Trending'],['is_bestseller','Bestseller']].map(([k,l])=>(
++                  <label key={k} className="inline-flex items-center gap-2 text-sm"><input type="checkbox" checked={!!edit[k]} onChange={e=>setEdit({...edit,[k]:e.target.checked})} data-testid={`product-${k}`}/> {l}</label>
+                 ))}
+               </div>
+             </div>
+diff --git a/app/admin/settings/page.js b/app/admin/settings/page.js
+index 901df0e..ab94f64 100644
+--- a/app/admin/settings/page.js
++++ b/app/admin/settings/page.js
+@@ -9,6 +9,7 @@ export default function AdminSettings(){
+   useEffect(()=>{ load() },[])
+   const upsert = async (key, value) => { const r = await fetch('/api/admin/settings', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ key, value }) }); if(!r.ok){const d=await r.json();return toast.error(d.error||'Failed')} toast.success('Saved'); load() }
+   const rp = items.find(s => s.key === 'payment_razorpay')?.value || {}
++  const cod = items.find(s => s.key === 'cod')?.value || {}
+   const brand = items.find(s => s.key === 'brand')?.value || {}
+   const analytics = items.find(s => s.key === 'analytics')?.value || {}
+   const seo = items.find(s => s.key === 'seo')?.value || {}
+@@ -25,6 +26,10 @@ export default function AdminSettings(){
+         <RazorpayForm initial={rp} onSave={v => upsert('payment_razorpay', v)}/>
+       </Section>
+ 
++      <Section title="Payment — Cash on Delivery (COD)" desc="Enable COD for the Indian market. Optional handling fee & min/max order limits.">
++        <CODForm initial={cod} onSave={v => upsert('cod', v)}/>
++      </Section>
++
+       <Section title="Analytics" desc="Meta Pixel and Google Analytics 4 auto-inject site-wide with e-commerce events.">
+         <AnalyticsForm initial={analytics} onSave={v => upsert('analytics', v)}/>
+       </Section>
+@@ -157,3 +162,20 @@ function EmailTest({ defaultTo }){
+ }
+ 
+ function F({label, children}) { return <label className="block"><span className="text-xs uppercase tracking-widest text-muted-foreground">{label}</span><div className="mt-1">{children}</div></label> }
++
++function CODForm({ initial, onSave }){
++  const [f,setF] = useState({ enabled:true, fee:0, min_order:0, max_order:0, ...(initial||{}) })
++  useEffect(()=>{ setF({ enabled:true, fee:0, min_order:0, max_order:0, ...(initial||{}) }) }, [initial])
++  return (
++    <div className="space-y-3">
++      <label className="inline-flex items-center gap-2"><input type="checkbox" checked={f.enabled!==false} onChange={e=>setF({...f,enabled:e.target.checked})} data-testid="cod-enabled-toggle"/> Enable Cash on Delivery</label>
++      <div className="grid md:grid-cols-3 gap-3">
++        <F label="COD handling fee (₹)"><input type="number" min="0" value={f.fee||0} onChange={e=>setF({...f,fee:Number(e.target.value||0)})} className="w-full h-10 px-3 border border-border" data-testid="cod-fee-input"/></F>
++        <F label="Minimum order for COD (₹, 0 = no min)"><input type="number" min="0" value={f.min_order||0} onChange={e=>setF({...f,min_order:Number(e.target.value||0)})} className="w-full h-10 px-3 border border-border" data-testid="cod-min-input"/></F>
++        <F label="Maximum order for COD (₹, 0 = no max)"><input type="number" min="0" value={f.max_order||0} onChange={e=>setF({...f,max_order:Number(e.target.value||0)})} className="w-full h-10 px-3 border border-border" data-testid="cod-max-input"/></F>
++      </div>
++      <div className="text-xs text-muted-foreground">Recommended for jewellery: set a maximum (e.g., ₹15,000) to limit fraud & return-risk on high-value COD orders.</div>
++      <button onClick={()=>onSave(f)} className="inline-flex items-center gap-2 h-10 px-4 bg-primary text-primary-foreground text-xs uppercase tracking-widest" data-testid="cod-save-btn"><Save className="h-4 w-4"/> Save COD settings</button>
++    </div>
++  )
++}
+diff --git a/app/api/[[...path]]/route.js b/app/api/[[...path]]/route.js
+index 21c560f..b5055c4 100644
+--- a/app/api/[[...path]]/route.js
++++ b/app/api/[[...path]]/route.js
+@@ -57,6 +57,22 @@ async function handler(request, { params }) {
+     // ------------- HEALTH -------------
+     if (route === '/health' && method === 'GET') return json({ ok: true, ts: Date.now() })
+ 
++    // ------------- COD CONFIG (public) -------------
++    if (route === '/cod-config' && method === 'GET') {
++      try {
++        const admin = getSupabaseAdmin()
++        if (!admin) return json({ config: { enabled: true, fee: 0, min_order: 0, max_order: 0 } })
++        const { data } = await admin.from('settings').select('value').eq('key','cod').single()
++        const v = data?.value && typeof data.value === 'object' ? data.value : {}
++        return json({ config: {
++          enabled: v.enabled !== false,
++          fee: Number(v.fee || 0),
++          min_order: Number(v.min_order || 0),
++          max_order: Number(v.max_order || 0),
++        } })
++      } catch { return json({ config: { enabled: true, fee: 0, min_order: 0, max_order: 0 } }) }
++    }
++
+     // ------------- BRAND (public safe subset) -------------
+     if (route === '/brand' && method === 'GET') {
+       try {
+@@ -151,6 +167,14 @@ async function handler(request, { params }) {
+         return new NextResponse(sql, { headers: { 'content-type': 'text/plain' } })
+       } catch (e) { return json({ error: e.message }, 500) }
+     }
++    if (route === '/setup/migration-features' && method === 'GET') {
++      try {
++        const fs = await import('fs')
++        const p = await import('path')
++        const sql = fs.readFileSync(p.default.join(process.cwd(), 'supabase', 'migration_features.sql'), 'utf8')
++        return new NextResponse(sql, { headers: { 'content-type': 'text/plain' } })
++      } catch (e) { return json({ error: e.message }, 500) }
++    }
+ 
+     // ------------- HOMEPAGE (public) -------------
+     if (route === '/homepage' && method === 'GET') {
+@@ -321,25 +345,57 @@ async function handler(request, { params }) {
+         }
+       }
+       const shipping = subtotal >= 999 ? 0 : 79
+-      const total = Math.max(0, subtotal - discount + shipping)
++
++      // COD handling
++      const payment_method = body.payment_method === 'cod' ? 'cod' : 'online'
++      let codFee = 0
++      if (payment_method === 'cod') {
++        const { data: codRow } = await admin.from('settings').select('value').eq('key','cod').single()
++        const cfg = codRow?.value && typeof codRow.value === 'object' ? codRow.value : {}
++        if (cfg.enabled === false) return json({ error: 'COD is currently unavailable' }, 400)
++        const codMin = Number(cfg.min_order || 0)
++        const codMax = Number(cfg.max_order || 0)
++        if (codMin > 0 && subtotal < codMin) return json({ error: `COD requires minimum order of ₹${codMin}` }, 400)
++        if (codMax > 0 && subtotal > codMax) return json({ error: `COD not available for orders above ₹${codMax}` }, 400)
++        codFee = Number(cfg.fee || 0)
++      }
++      const total = Math.max(0, subtotal - discount + shipping + codFee)
+ 
+       // Current user (may be null for guest)
+       const sb = await getSupabaseServer()
+       const { data: { user } } = await sb.auth.getUser()
+ 
++      const notes = typeof body.notes === 'string' ? body.notes.slice(0, 500) : null
++
+       const order_number = orderNumber()
+       const { data: order, error: oe } = await admin.from('orders').insert({
+         order_number, user_id: user?.id || null,
+         email: p.data.email, phone: p.data.phone,
+-        status: 'pending', payment_status: 'pending',
++        status: payment_method === 'cod' ? 'processing' : 'pending',
++        payment_status: payment_method === 'cod' ? 'cod_pending' : 'pending',
++        payment_method,
+         subtotal, discount, shipping, total,
++        cod_fee: codFee || null,
++        notes,
+         coupon_code: couponCode,
+         shipping_address: p.data.address,
+         items: orderItems,
+       }).select().single()
+       if (oe) return json({ error: 'Could not create order: ' + oe.message }, 500)
+ 
+-      // Razorpay order
++      // COD: skip Razorpay entirely, send COD confirmation email, no stock decrement here
++      if (payment_method === 'cod') {
++        try {
++          await admin.from('order_status_history').insert({ order_id: order.id, status: 'processing', note: 'COD order placed' })
++        } catch {}
++        try {
++          const { sendCODOrderConfirmation } = await import('@/lib/email')
++          sendCODOrderConfirmation({ to: order.email, order }).catch(()=>{})
++        } catch {}
++        return json({ order_id: order.id, order_number, total, cod: true, mode: 'cod' })
++      }
++
++      // Razorpay order (online payment)
+       const { client, key_id } = await getRazorpay()
+       let rzp_order_id = null, mode = 'test'
+       if (client && key_id && !key_id.includes('placeholder')) {
+@@ -603,7 +659,21 @@ async function handler(request, { params }) {
+ 
+       // Categories
+       if (route === '/admin/categories' && method === 'GET') { const { data } = await db.from('categories').select('*').order('sort_order'); return json({ categories: data||[] }) }
+-      if (route === '/admin/categories' && method === 'POST') { const body = await request.json(); const { data, error } = await db.from('categories').insert(body).select().single(); if(error) return json({error:error.message},400); await audit(adm,'create','category',data.id,body); return json({ category: data }) }
++      if (route === '/admin/categories' && method === 'POST') {
++        const body = await request.json()
++        // Upsert: if id present -> update, else insert
++        if (body.id) {
++          const { id, ...rest } = body
++          const { data, error } = await db.from('categories').update({ ...rest, updated_at: new Date().toISOString() }).eq('id', id).select().single()
++          if (error) return json({ error: error.message }, 400)
++          await audit(adm, 'update', 'category', id, rest)
++          return json({ category: data })
++        }
++        const { data, error } = await db.from('categories').insert(body).select().single()
++        if (error) return json({ error: error.message }, 400)
++        await audit(adm, 'create', 'category', data.id, body)
++        return json({ category: data })
++      }
+       if (route.startsWith('/admin/categories/') && method === 'DELETE') { await db.from('categories').delete().eq('id', path[2]); return json({ ok: true }) }
+ 
+       // Orders
+@@ -611,6 +681,26 @@ async function handler(request, { params }) {
+         const { data } = await db.from('orders').select('*').order('created_at', { ascending: false })
+         return json({ orders: data || [] })
+       }
++      if (route.startsWith('/admin/orders/') && path[3] === 'cod-collected' && method === 'POST') {
++        const id = path[2]
++        const { data: order } = await db.from('orders').select('*').eq('id', id).single()
++        if (!order) return json({ error: 'Not found' }, 404)
++        if (order.payment_method !== 'cod') return json({ error: 'Not a COD order' }, 400)
++        // Mark payment collected; decrement stock now (COD stock decrement happens on delivery)
++        await db.from('orders').update({ payment_status: 'paid', updated_at: new Date().toISOString() }).eq('id', id)
++        for (const it of order.items || []) {
++          try {
++            await db.rpc('decrement_stock', { p_id: it.product_id, qty: it.quantity })
++          } catch {
++            const { data: pr } = await db.from('products').select('stock,name').eq('id', it.product_id).single()
++            const newStock = Math.max(0, (pr?.stock || 0) - it.quantity)
++            await db.from('products').update({ stock: newStock }).eq('id', it.product_id)
++          }
++        }
++        await db.from('order_status_history').insert({ order_id: id, status: order.status, note: 'COD payment collected' })
++        await audit(adm, 'cod_collected', 'order', id, null)
++        return json({ ok: true })
++      }
+       if (route.startsWith('/admin/orders/') && method === 'PATCH') {
+         const id = path[2]
+         const body = await request.json()
+diff --git a/app/auth/callback/route.js b/app/auth/callback/route.js
+new file mode 100644
+index 0000000..01c79e6
+--- /dev/null
++++ b/app/auth/callback/route.js
+@@ -0,0 +1,52 @@
++import { NextResponse } from 'next/server'
++import { createServerClient } from '@supabase/ssr'
++import { cookies } from 'next/headers'
++import { getSupabaseAdmin } from '@/lib/supabase/admin'
++
++export async function GET(request) {
++  const { searchParams, origin } = new URL(request.url)
++  const code = searchParams.get('code')
++  const next = searchParams.get('next') || '/account'
++  if (!code) return NextResponse.redirect(`${origin}/login?error=missing_code`)
++
++  const cookieStore = await cookies()
++  const supabase = createServerClient(
++    process.env.NEXT_PUBLIC_SUPABASE_URL,
++    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY,
++    {
++      cookies: {
++        getAll() { return cookieStore.getAll() },
++        setAll(cookiesToSet) {
++          try { cookiesToSet.forEach(({ name, value, options }) => cookieStore.set(name, value, options)) } catch {}
++        },
++      },
++    }
++  )
++
++  const { data, error } = await supabase.auth.exchangeCodeForSession(code)
++  if (error) return NextResponse.redirect(`${origin}/login?error=${encodeURIComponent(error.message)}`)
++
++  // Ensure a profile row exists for OAuth users (email/password signup already handles this via trigger or upsert on first login)
++  try {
++    const user = data?.user
++    if (user) {
++      const admin = getSupabaseAdmin()
++      if (admin) {
++        const { data: existing } = await admin.from('profiles').select('id').eq('id', user.id).maybeSingle()
++        if (!existing) {
++          const meta = user.user_metadata || {}
++          const full_name = meta.full_name || meta.name || (user.email ? user.email.split('@')[0] : '')
++          await admin.from('profiles').upsert({
++            id: user.id,
++            email: user.email,
++            full_name,
++            role: 'customer',
++          }, { onConflict: 'id' })
++        }
++      }
++    }
++  } catch (e) { console.error('[oauth callback] profile upsert failed', e?.message) }
++
++  const safeNext = next.startsWith('/') ? next : '/account'
++  return NextResponse.redirect(`${origin}${safeNext}`)
++}
+diff --git a/app/checkout/page.js b/app/checkout/page.js
+index 52a4dea..609aaf1 100644
+--- a/app/checkout/page.js
++++ b/app/checkout/page.js
+@@ -6,27 +6,41 @@ import SiteHeader from '@/components/site-header'
+ import SiteFooter from '@/components/site-footer'
+ import { inr } from '@/lib/format'
+ import { toast } from 'sonner'
+-import { Lock, ChevronRight } from 'lucide-react'
++import { Lock, ChevronRight, CreditCard, Truck } from 'lucide-react'
+ 
+ function Checkout() {
+   const router = useRouter()
+   const [items, setItems] = useState([])
+   const [user, setUser] = useState(null)
+-  const [form, setForm] = useState({ email:'', phone:'', name:'', line1:'', line2:'', city:'', state:'', pincode:'', country:'India' })
++  const [form, setForm] = useState({
++    email:'', phone:'', alt_phone:'', name:'',
++    line1:'', line2:'', landmark:'', city:'', state:'', pincode:'', country:'India',
++    notes:'', billing_same:true,
++  })
+   const [coupon, setCoupon] = useState('')
+   const [applied, setApplied] = useState(null)
+   const [loading, setLoading] = useState(false)
++  const [payMethod, setPayMethod] = useState('online') // 'online' | 'cod'
++  const [codConfig, setCodConfig] = useState({ enabled: true, fee: 0, min_order: 0, max_order: 0 })
+ 
+   useEffect(() => {
+     const c = JSON.parse(localStorage.getItem('cart')||'[]'); setItems(c)
+     if (!c.length) router.replace('/cart')
+     fetch('/api/auth/me').then(r=>r.json()).then(d => { setUser(d.user); if (d.user?.email) setForm(f=>({...f, email: d.user.email})) })
++    fetch('/api/cod-config').then(r=>r.json()).then(d => { if (d?.config) setCodConfig(d.config) }).catch(()=>{})
+   }, [router])
+ 
+   const subtotal = items.reduce((s,i)=>s + i.price*i.quantity, 0)
+   const shipping = subtotal >= 999 ? 0 : 79
+   const discount = applied?.discount || 0
+-  const total = Math.max(0, subtotal - discount + shipping)
++  const codFee = payMethod === 'cod' ? Number(codConfig.fee || 0) : 0
++  const total = Math.max(0, subtotal - discount + shipping + codFee)
++
++  // COD eligibility
++  const codMin = Number(codConfig.min_order || 0)
++  const codMax = Number(codConfig.max_order || 0)
++  const codEligible = codConfig.enabled && subtotal >= codMin && (codMax === 0 || subtotal <= codMax)
++  useEffect(() => { if (!codEligible && payMethod === 'cod') setPayMethod('online') }, [codEligible, payMethod])
+ 
+   const applyCoupon = async () => {
+     if (!coupon.trim()) return
+@@ -42,21 +56,34 @@ function Checkout() {
+     try {
+       const r = await fetch('/api/checkout/create', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({
+         email: form.email, phone: form.phone,
+-        address: { name: form.name, phone: form.phone, line1: form.line1, line2: form.line2||null, city: form.city, state: form.state, pincode: form.pincode, country: form.country },
++        address: {
++          name: form.name, phone: form.phone, alt_phone: form.alt_phone||null,
++          line1: form.line1, line2: form.line2||null, landmark: form.landmark||null,
++          city: form.city, state: form.state, pincode: form.pincode, country: form.country,
++        },
+         items: items.map(i => ({ product_id: i.product_id, size: i.size||null, color: i.color||null, quantity: i.quantity })),
+         coupon: applied?.code || null,
++        payment_method: payMethod,
++        notes: form.notes || null,
+       }) })
+       const d = await r.json()
+       if (!r.ok) { setLoading(false); return toast.error(d.error || 'Failed to place order') }
+ 
+-      // If Razorpay configured, open checkout; else mark paid in test mode
++      // COD flow — order is already placed with payment_status=cod_pending, no Razorpay
++      if (payMethod === 'cod' || d.cod === true) {
++        localStorage.setItem('cart','[]'); window.dispatchEvent(new Event('cart:updated'))
++        router.push(`/orders/${d.order_id}?success=1&cod=1`)
++        return
++      }
++
++      // Online payment — Razorpay
+       if (d.razorpay_order_id && d.razorpay_key_id && !d.razorpay_key_id.includes('placeholder') && typeof window !== 'undefined' && window.Razorpay) {
+         const rzp = new window.Razorpay({
+           key: d.razorpay_key_id, amount: Math.round(total*100), currency: 'INR',
+-          name: 'Aurelia', description: `Order ${d.order_number}`,
++          name: 'Alankar Fashions', description: `Order ${d.order_number}`,
+           order_id: d.razorpay_order_id,
+           prefill: { name: form.name, email: form.email, contact: form.phone },
+-          theme: { color: '#1c1917' },
++          theme: { color: '#3B1F1A' },
+           handler: async (response) => {
+             const vr = await fetch('/api/checkout/verify', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ order_id: d.order_id, ...response }) })
+             const vd = await vr.json()
+@@ -68,7 +95,6 @@ function Checkout() {
+         })
+         rzp.open()
+       } else {
+-        // Test/placeholder mode
+         const vr = await fetch('/api/checkout/verify', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ order_id: d.order_id }) })
+         const vd = await vr.json()
+         if (!vr.ok) { setLoading(false); return toast.error(vd.error || 'Verification failed') }
+@@ -86,33 +112,65 @@ function Checkout() {
+         <h1 className="font-serif text-3xl md:text-4xl">Checkout</h1>
+         <div className="mt-8 grid lg:grid-cols-3 gap-10">
+           <div className="lg:col-span-2 space-y-8">
+-            <section className="border border-border p-6 bg-card">
++            <section className="border border-border p-6 bg-card" data-testid="checkout-contact-section">
+               <h2 className="font-serif text-xl mb-4">Contact</h2>
+               <div className="grid md:grid-cols-2 gap-4">
+-                <Input label="Email" value={form.email} onChange={v=>setForm({...form,email:v})} type="email"/>
+-                <Input label="Phone" value={form.phone} onChange={v=>setForm({...form,phone:v})}/>
++                <Input label="Email *" value={form.email} onChange={v=>setForm({...form,email:v})} type="email" testid="checkout-email"/>
++                <Input label="Phone *" value={form.phone} onChange={v=>setForm({...form,phone:v})} testid="checkout-phone"/>
++                <Input label="Alternate phone (optional)" value={form.alt_phone} onChange={v=>setForm({...form,alt_phone:v})} testid="checkout-alt-phone"/>
+               </div>
+               {!user && <div className="text-xs text-muted-foreground mt-3">Have an account? <a href="/login?next=/checkout" className="underline">Sign in</a> for faster checkout.</div>}
+             </section>
+-            <section className="border border-border p-6 bg-card">
++            <section className="border border-border p-6 bg-card" data-testid="checkout-address-section">
+               <h2 className="font-serif text-xl mb-4">Shipping Address</h2>
+               <div className="grid md:grid-cols-2 gap-4">
+-                <Input label="Full name" value={form.name} onChange={v=>setForm({...form,name:v})}/>
+-                <Input label="Pincode" value={form.pincode} onChange={v=>setForm({...form,pincode:v})}/>
+-                <div className="md:col-span-2"><Input label="Address line 1" value={form.line1} onChange={v=>setForm({...form,line1:v})}/></div>
+-                <div className="md:col-span-2"><Input label="Address line 2 (optional)" value={form.line2} onChange={v=>setForm({...form,line2:v})}/></div>
+-                <Input label="City" value={form.city} onChange={v=>setForm({...form,city:v})}/>
+-                <Input label="State" value={form.state} onChange={v=>setForm({...form,state:v})}/>
++                <Input label="Full name *" value={form.name} onChange={v=>setForm({...form,name:v})} testid="checkout-name"/>
++                <Input label="Pincode *" value={form.pincode} onChange={v=>setForm({...form,pincode:v})} testid="checkout-pincode"/>
++                <div className="md:col-span-2"><Input label="Address line 1 *" value={form.line1} onChange={v=>setForm({...form,line1:v})} testid="checkout-line1"/></div>
++                <div className="md:col-span-2"><Input label="Address line 2 (apartment, suite, etc.)" value={form.line2} onChange={v=>setForm({...form,line2:v})} testid="checkout-line2"/></div>
++                <div className="md:col-span-2"><Input label="Landmark (optional — e.g., 'near Khari Corner')" value={form.landmark} onChange={v=>setForm({...form,landmark:v})} testid="checkout-landmark"/></div>
++                <Input label="City *" value={form.city} onChange={v=>setForm({...form,city:v})} testid="checkout-city"/>
++                <Input label="State *" value={form.state} onChange={v=>setForm({...form,state:v})} testid="checkout-state"/>
+               </div>
++              <label className="inline-flex items-center gap-2 text-sm mt-4">
++                <input type="checkbox" checked={form.billing_same} onChange={e=>setForm({...form,billing_same:e.target.checked})} data-testid="checkout-billing-same"/>
++                Billing address same as shipping
++              </label>
+             </section>
+-            <section className="border border-border p-6 bg-card">
+-              <h2 className="font-serif text-xl mb-3">Payment</h2>
+-              <div className="flex items-center gap-2 text-sm text-muted-foreground"><Lock className="h-4 w-4"/> Secure payment via Razorpay — UPI, Cards, Netbanking, Wallets</div>
+-              <p className="text-xs text-muted-foreground mt-2">You will be redirected to Razorpay's secure hosted checkout to complete your payment.</p>
++            <section className="border border-border p-6 bg-card" data-testid="checkout-notes-section">
++              <h2 className="font-serif text-xl mb-3">Delivery Instructions <span className="text-xs font-sans font-normal text-muted-foreground">(optional)</span></h2>
++              <textarea rows={2} value={form.notes} onChange={e=>setForm({...form,notes:e.target.value})} placeholder="e.g., leave with security guard, call before delivery" className="w-full px-3 py-2 border border-border bg-background text-sm" data-testid="checkout-notes"/>
++            </section>
++            <section className="border border-border p-6 bg-card" data-testid="checkout-payment-section">
++              <h2 className="font-serif text-xl mb-3">Payment Method</h2>
++              <div className="space-y-3">
++                <label className={`flex items-start gap-3 p-4 border cursor-pointer ${payMethod==='online'?'border-primary bg-primary/5':'border-border'}`} data-testid="checkout-pay-online-option">
++                  <input type="radio" name="pay" checked={payMethod==='online'} onChange={()=>setPayMethod('online')} className="mt-1" data-testid="checkout-pay-online-radio"/>
++                  <div className="flex-1">
++                    <div className="font-medium flex items-center gap-2"><CreditCard className="h-4 w-4"/> Pay Online (UPI / Card / Netbanking / Wallet)</div>
++                    <div className="text-xs text-muted-foreground mt-1"><Lock className="h-3 w-3 inline"/> Secure payment via Razorpay. Get your order confirmed instantly.</div>
++                  </div>
++                </label>
++                <label className={`flex items-start gap-3 p-4 border ${codEligible?'cursor-pointer':'opacity-50 cursor-not-allowed'} ${payMethod==='cod'?'border-primary bg-primary/5':'border-border'}`} data-testid="checkout-pay-cod-option">
++                  <input type="radio" name="pay" checked={payMethod==='cod'} onChange={()=>codEligible && setPayMethod('cod')} disabled={!codEligible} className="mt-1" data-testid="checkout-pay-cod-radio"/>
++                  <div className="flex-1">
++                    <div className="font-medium flex items-center gap-2"><Truck className="h-4 w-4"/> Cash on Delivery {codFee>0 && <span className="text-xs font-normal text-muted-foreground">(+{inr(codFee)} handling fee)</span>}</div>
++                    <div className="text-xs text-muted-foreground mt-1">
++                      {!codConfig.enabled && 'COD is currently unavailable.'}
++                      {codConfig.enabled && codMin>0 && subtotal<codMin && `COD available on orders above ${inr(codMin)}.`}
++                      {codConfig.enabled && codMax>0 && subtotal>codMax && `COD not available for orders above ${inr(codMax)}. Please pay online.`}
++                      {codEligible && 'Pay in cash when your order arrives.'}
++                    </div>
++                  </div>
++                </label>
++              </div>
+             </section>
+           </div>
+-          <aside className="bg-card border border-border p-6 h-fit lg:sticky lg:top-24">
+-            <h2 className="font-serif text-xl">Order Summary</h2>
++          <aside className="bg-card border border-border p-6 h-fit lg:sticky lg:top-24" data-testid="checkout-summary">
++            <div className="flex items-center justify-between">
++              <h2 className="font-serif text-xl">Order Summary</h2>
++              <a href="/cart" className="text-xs uppercase tracking-widest text-muted-foreground underline" data-testid="checkout-edit-cart">Edit</a>
++            </div>
+             <div className="mt-4 divide-y divide-border">
+               {items.map(i => (
+                 <div key={i.key} className="flex gap-3 py-3">
+@@ -126,17 +184,18 @@ function Checkout() {
+               ))}
+             </div>
+             <div className="mt-4 flex gap-2">
+-              <input value={coupon} onChange={e=>setCoupon(e.target.value.toUpperCase())} placeholder="Coupon" className="flex-1 h-10 px-3 border border-border bg-background text-sm"/>
+-              <button onClick={applyCoupon} className="px-4 h-10 border border-border text-xs uppercase tracking-widest">Apply</button>
++              <input value={coupon} onChange={e=>setCoupon(e.target.value.toUpperCase())} placeholder="Coupon" className="flex-1 h-10 px-3 border border-border bg-background text-sm" data-testid="checkout-coupon-input"/>
++              <button onClick={applyCoupon} className="px-4 h-10 border border-border text-xs uppercase tracking-widest" data-testid="checkout-coupon-apply">Apply</button>
+             </div>
+             <div className="mt-4 space-y-1 text-sm">
+               <div className="flex justify-between"><span className="text-muted-foreground">Subtotal</span><span>{inr(subtotal)}</span></div>
+               {applied && <div className="flex justify-between text-emerald-700"><span>Discount</span><span>− {inr(discount)}</span></div>}
+               <div className="flex justify-between"><span className="text-muted-foreground">Shipping</span><span>{shipping===0?'Free':inr(shipping)}</span></div>
+-              <div className="flex justify-between font-semibold text-base pt-2 border-t border-border"><span>Total</span><span>{inr(total)}</span></div>
++              {codFee>0 && <div className="flex justify-between"><span className="text-muted-foreground">COD handling</span><span>{inr(codFee)}</span></div>}
++              <div className="flex justify-between font-semibold text-base pt-2 border-t border-border"><span>Total</span><span data-testid="checkout-total">{inr(total)}</span></div>
+             </div>
+-            <button onClick={placeOrder} disabled={loading} className="mt-5 w-full h-12 bg-primary text-primary-foreground text-sm uppercase tracking-widest disabled:opacity-60 inline-flex items-center justify-center gap-2">
+-              {loading ? 'Processing…' : <>Pay {inr(total)} <ChevronRight className="h-4 w-4"/></>}
++            <button onClick={placeOrder} disabled={loading} className="mt-5 w-full h-12 bg-primary text-primary-foreground text-sm uppercase tracking-widest disabled:opacity-60 inline-flex items-center justify-center gap-2" data-testid="checkout-place-order-btn">
++              {loading ? 'Processing…' : (payMethod === 'cod' ? <>Place Order · {inr(total)} <ChevronRight className="h-4 w-4"/></> : <>Pay {inr(total)} <ChevronRight className="h-4 w-4"/></>)}
+             </button>
+             <div className="text-[11px] text-muted-foreground mt-3 text-center">By placing this order, you agree to our Terms & Privacy.</div>
+           </aside>
+@@ -147,11 +206,11 @@ function Checkout() {
+   )
+ }
+ 
+-function Input({ label, value, onChange, type='text' }) {
++function Input({ label, value, onChange, type='text', testid }) {
+   return (
+     <label className="block">
+       <span className="text-xs uppercase tracking-widest text-muted-foreground">{label}</span>
+-      <input type={type} value={value||''} onChange={e=>onChange(e.target.value)} className="mt-1 w-full h-11 px-3 border border-border bg-background text-sm"/>
++      <input type={type} value={value||''} onChange={e=>onChange(e.target.value)} className="mt-1 w-full h-11 px-3 border border-border bg-background text-sm" data-testid={testid}/>
+     </label>
+   )
+ }
+diff --git a/app/layout.js b/app/layout.js
+index 7362827..d82b8ed 100644
+--- a/app/layout.js
++++ b/app/layout.js
+@@ -9,42 +9,71 @@ const serif = Cormorant_Garamond({ subsets: ['latin'], weight: ['400','500','600
+ const sans = Inter({ subsets: ['latin'], variable: '--font-sans', display: 'swap' })
+ const devanagari = Noto_Serif_Devanagari({ subsets: ['devanagari','latin'], weight: ['400','600','700'], variable: '--font-devanagari', display: 'swap' })
+ 
++// Robust getBrand — NEVER throws. Always returns a fully-shaped object with plain object children.
++// This is critical because it runs during server render on every fresh page load.
+ async function getBrand() {
++  const fallback = { brand: {}, seo: {}, analytics: {} }
+   try {
+     const admin = getSupabaseAdmin()
+-    const { data } = await admin.from('settings').select('key,value').in('key', ['brand','seo','analytics'])
+-    const map = Object.fromEntries((data||[]).map(x => [x.key, x.value]))
+-    return { brand: map.brand || {}, seo: map.seo || {}, analytics: map.analytics || {} }
+-  } catch { return { brand: {}, seo: {}, analytics: {} } }
++    if (!admin) return fallback
++    const { data, error } = await admin
++      .from('settings')
++      .select('key,value')
++      .in('key', ['brand','seo','analytics'])
++    if (error || !Array.isArray(data)) return fallback
++    const map = {}
++    for (const row of data) {
++      // jsonb column may be null, string, array, or object — coerce to object safely.
++      const v = row?.value
++      map[row.key] = (v && typeof v === 'object' && !Array.isArray(v)) ? v : {}
++    }
++    return {
++      brand: map.brand || {},
++      seo: map.seo || {},
++      analytics: map.analytics || {},
++    }
++  } catch (e) {
++    console.error('[layout.getBrand] failed:', e?.message)
++    return fallback
++  }
+ }
+ 
+ export async function generateMetadata() {
+-  const { brand, seo } = await getBrand()
+-  const name = brand.name || 'Alankar Fashions'
+-  const tagline = brand.tagline || 'स्त्रीचे सौंदर्य खुलवणारे — Considered Indian jewellery from Kolhapur'
+-  const description = seo.description || 'Alankar Fashions — handcrafted artificial jewellery from Kolhapur. Traditional Kolhapuri Saj, Thushi, Kundan, pearl sets, bangles and earrings. Free shipping across India.'
+-  const url = process.env.NEXT_PUBLIC_BASE_URL || 'https://alankarfashions.com'
+-  return {
+-    metadataBase: new URL(url),
+-    title: { default: `${name} — ${tagline}`, template: `%s • ${name}` },
+-    description,
+-    keywords: ['artificial jewellery','Kolhapuri Saj','Thushi','Kundan necklace','pearl sets','Indian jewellery','Kolhapur','Chinchpeti','Tanmani','maharashtrian jewellery','bangles','earrings'],
+-    openGraph: { title: name, description, url, siteName: name, type: 'website', locale: 'en_IN' },
+-    twitter: { card: 'summary_large_image', title: name, description },
+-    icons: { icon: brand.favicon_url || '/favicon.svg' },
+-    verification: seo.gsc_verification ? { google: seo.gsc_verification } : undefined,
++  try {
++    const { brand, seo } = await getBrand()
++    const name = brand?.name || 'Alankar Fashions'
++    const tagline = brand?.tagline || 'स्त्रीचे सौंदर्य खुलवणारे — Considered Indian jewellery from Kolhapur'
++    const description = seo?.description || 'Alankar Fashions — handcrafted artificial jewellery from Kolhapur. Traditional Kolhapuri Saj, Thushi, Kundan, pearl sets, bangles and earrings. Free shipping across India.'
++    const rawUrl = process.env.NEXT_PUBLIC_BASE_URL || 'https://alankarfashions.com'
++    let metadataBase
++    try { metadataBase = new URL(rawUrl) } catch { metadataBase = new URL('https://alankarfashions.com') }
++    const meta = {
++      metadataBase,
++      title: { default: `${name} — ${tagline}`, template: `%s • ${name}` },
++      description,
++      keywords: ['artificial jewellery','Kolhapuri Saj','Thushi','Kundan necklace','pearl sets','Indian jewellery','Kolhapur','Chinchpeti','Tanmani','maharashtrian jewellery','bangles','earrings'],
++      openGraph: { title: name, description, url: rawUrl, siteName: name, type: 'website', locale: 'en_IN' },
++      twitter: { card: 'summary_large_image', title: name, description },
++      icons: { icon: brand?.favicon_url || '/favicon.svg' },
++    }
++    if (seo?.gsc_verification) meta.verification = { google: seo.gsc_verification }
++    return meta
++  } catch (e) {
++    console.error('[layout.generateMetadata] failed:', e?.message)
++    return { title: 'Alankar Fashions', description: 'Handcrafted artificial jewellery from Kolhapur.' }
+   }
+ }
+ 
+ export default async function RootLayout({ children }) {
+-  const { brand, analytics } = await getBrand()
++  const { analytics } = await getBrand()
++  const safeAnalytics = (analytics && typeof analytics === 'object') ? analytics : {}
+   return (
+     <html lang="en" className={`${serif.variable} ${sans.variable} ${devanagari.variable}`} suppressHydrationWarning>
+       <body className="min-h-screen bg-background text-foreground antialiased font-sans" suppressHydrationWarning>
+         {children}
+         <CartDrawer/>
+         <Toaster position="top-center" richColors closeButton />
+-        <Analytics metaPixelId={analytics?.meta_pixel_id} ga4Id={analytics?.ga4_id} />
++        <Analytics metaPixelId={safeAnalytics.meta_pixel_id || ''} ga4Id={safeAnalytics.ga4_id || ''} />
+       </body>
+     </html>
+   )
+diff --git a/app/login/page.js b/app/login/page.js
+index df0d6c6..5e05e6e 100644
+--- a/app/login/page.js
++++ b/app/login/page.js
+@@ -14,6 +14,7 @@ function Login() {
+   const [email, setEmail] = useState('')
+   const [password, setPassword] = useState('')
+   const [loading, setLoading] = useState(false)
++  const [gLoading, setGLoading] = useState(false)
+   const submit = async (e) => {
+     e.preventDefault(); setLoading(true)
+     const sb = getSupabaseBrowser()
+@@ -21,24 +22,38 @@ function Login() {
+     setLoading(false)
+     if (error) return toast.error(error.message)
+     toast.success('Welcome back')
+-    // Sync cookies via server route (already synced by supabase-js)
+     router.push(next)
+   }
++  const google = async () => {
++    setGLoading(true)
++    const sb = getSupabaseBrowser()
++    const origin = typeof window !== 'undefined' ? window.location.origin : ''
++    const { error } = await sb.auth.signInWithOAuth({
++      provider: 'google',
++      options: { redirectTo: `${origin}/auth/callback?next=${encodeURIComponent(next)}` }
++    })
++    if (error) { setGLoading(false); toast.error(error.message) }
++  }
+   return (
+     <div>
+       <SiteHeader/>
+       <main className="container-tight py-16 md:py-24">
+         <div className="max-w-md mx-auto">
+           <h1 className="font-serif text-3xl text-center">Welcome back</h1>
+-          <p className="text-sm text-muted-foreground text-center mt-2">Sign in to your Aurelia account</p>
+-          <form onSubmit={submit} className="mt-8 space-y-4">
++          <p className="text-sm text-muted-foreground text-center mt-2">Sign in to your Alankar Fashions account</p>
++          <button onClick={google} disabled={gLoading} type="button" className="mt-8 w-full h-12 border border-border bg-background text-sm inline-flex items-center justify-center gap-3 hover:bg-muted disabled:opacity-60" data-testid="google-login-btn">
++            <svg viewBox="0 0 24 24" className="h-5 w-5" aria-hidden="true"><path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/><path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.99.66-2.26 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/><path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z"/><path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84C6.71 7.31 9.14 5.38 12 5.38z"/></svg>
++            {gLoading ? 'Redirecting…' : 'Continue with Google'}
++          </button>
++          <div className="my-6 flex items-center gap-4"><div className="flex-1 h-px bg-border"/><span className="text-xs uppercase tracking-widest text-muted-foreground">or</span><div className="flex-1 h-px bg-border"/></div>
++          <form onSubmit={submit} className="space-y-4">
+             <label className="block"><span className="text-xs uppercase tracking-widest text-muted-foreground">Email</span>
+-              <input required type="email" value={email} onChange={e=>setEmail(e.target.value)} className="mt-1 w-full h-11 px-3 border border-border bg-background text-sm"/></label>
++              <input required type="email" value={email} onChange={e=>setEmail(e.target.value)} className="mt-1 w-full h-11 px-3 border border-border bg-background text-sm" data-testid="login-email"/></label>
+             <label className="block"><span className="text-xs uppercase tracking-widest text-muted-foreground">Password</span>
+-              <input required type="password" value={password} onChange={e=>setPassword(e.target.value)} className="mt-1 w-full h-11 px-3 border border-border bg-background text-sm"/></label>
+-            <button disabled={loading} className="w-full h-12 bg-primary text-primary-foreground text-sm uppercase tracking-widest">{loading?'Signing in…':'Sign In'}</button>
++              <input required type="password" value={password} onChange={e=>setPassword(e.target.value)} className="mt-1 w-full h-11 px-3 border border-border bg-background text-sm" data-testid="login-password"/></label>
++            <button disabled={loading} className="w-full h-12 bg-primary text-primary-foreground text-sm uppercase tracking-widest" data-testid="login-submit">{loading?'Signing in…':'Sign In'}</button>
+           </form>
+-          <div className="text-sm text-center mt-6 text-muted-foreground">New to Aurelia? <Link href={`/signup?next=${encodeURIComponent(next)}`} className="underline text-foreground">Create an account</Link></div>
++          <div className="text-sm text-center mt-6 text-muted-foreground">New to Alankar Fashions? <Link href={`/signup?next=${encodeURIComponent(next)}`} className="underline text-foreground">Create an account</Link></div>
+         </div>
+       </main>
+       <SiteFooter/>
+diff --git a/app/orders/[id]/page.js b/app/orders/[id]/page.js
+index 126e10e..e309c55 100644
+--- a/app/orders/[id]/page.js
++++ b/app/orders/[id]/page.js
+@@ -11,6 +11,7 @@ function OrderDetail({ id }) {
+   const [data, setData] = useState(null)
+   const sp = useSearchParams()
+   const success = sp.get('success') === '1'
++  const isCod = sp.get('cod') === '1' || (data?.order?.payment_method === 'cod')
+   useEffect(() => { fetch(`/api/orders/${id}`).then(r=>r.json()).then(setData) }, [id])
+ 
+   if (!data) return <div><SiteHeader/><div className="container-tight py-10 skeleton h-64"/></div>
+@@ -23,10 +24,14 @@ function OrderDetail({ id }) {
+       <SiteHeader/>
+       <main className="container-tight py-8 md:py-14">
+         {success && (
+-          <div className="mb-8 bg-emerald-50 text-emerald-900 border border-emerald-200 p-6 rounded-sm text-center">
++          <div className={`mb-8 ${o.payment_method==='cod'?'bg-orange-50 text-orange-900 border-orange-200':'bg-emerald-50 text-emerald-900 border-emerald-200'} border p-6 rounded-sm text-center`} data-testid="order-success-banner">
+             <CheckCircle2 className="h-8 w-8 mx-auto"/>
+-            <div className="font-serif text-2xl mt-2">Order confirmed</div>
+-            <div className="text-sm mt-1">Thank you — a confirmation email is on its way to <strong>{o.email}</strong>.</div>
++            <div className="font-serif text-2xl mt-2">{o.payment_method==='cod' ? 'Order placed — Pay on Delivery' : 'Order confirmed'}</div>
++            <div className="text-sm mt-1">
++              {o.payment_method==='cod'
++                ? <>Please keep <strong>{inr(o.total)}</strong> ready in cash for the delivery partner. Confirmation email sent to <strong>{o.email}</strong>.</>
++                : <>Thank you — a confirmation email is on its way to <strong>{o.email}</strong>.</>}
++            </div>
+           </div>
+         )}
+         <div className="flex justify-between items-start flex-wrap gap-4">
+@@ -37,7 +42,7 @@ function OrderDetail({ id }) {
+           </div>
+           <div className="text-right">
+             <div className="text-xs uppercase tracking-widest text-muted-foreground">Payment</div>
+-            <div className={`text-sm ${o.payment_status==='paid'?'text-emerald-700':'text-amber-700'}`}>{o.payment_status.toUpperCase()}</div>
++            <div className={`text-sm ${o.payment_status==='paid'?'text-emerald-700':o.payment_status==='cod_pending'?'text-orange-700':'text-amber-700'}`}>{o.payment_method==='cod' ? 'COD · ' : ''}{o.payment_status.toUpperCase().replace(/_/g,' ')}</div>
+             <div className="text-2xl font-semibold mt-1">{inr(o.total)}</div>
+           </div>
+         </div>
+@@ -79,7 +84,8 @@ function OrderDetail({ id }) {
+                 <div className="flex justify-between"><span className="text-muted-foreground">Subtotal</span><span>{inr(o.subtotal)}</span></div>
+                 {o.discount>0 && <div className="flex justify-between text-emerald-700"><span>Discount</span><span>− {inr(o.discount)}</span></div>}
+                 <div className="flex justify-between"><span className="text-muted-foreground">Shipping</span><span>{o.shipping>0?inr(o.shipping):'Free'}</span></div>
+-                <div className="flex justify-between font-semibold pt-2 border-t border-border"><span>Total</span><span>{inr(o.total)}</span></div>
++                {o.cod_fee>0 && <div className="flex justify-between"><span className="text-muted-foreground">COD handling</span><span>{inr(o.cod_fee)}</span></div>}
++                <div className="flex justify-between font-semibold pt-2 border-t border-border"><span>Total{o.payment_method==='cod'?' (pay on delivery)':''}</span><span>{inr(o.total)}</span></div>
+               </div>
+             </div>
+             <div className="border border-border p-5 bg-card">
+@@ -87,8 +93,9 @@ function OrderDetail({ id }) {
+               <div className="text-sm text-muted-foreground leading-relaxed">
+                 {o.shipping_address?.name}<br/>
+                 {o.shipping_address?.line1}{o.shipping_address?.line2?', '+o.shipping_address.line2:''}<br/>
++                {o.shipping_address?.landmark && <>Landmark: {o.shipping_address.landmark}<br/></>}
+                 {o.shipping_address?.city}, {o.shipping_address?.state} {o.shipping_address?.pincode}<br/>
+-                {o.shipping_address?.phone}
++                {o.shipping_address?.phone}{o.shipping_address?.alt_phone && <> · {o.shipping_address.alt_phone}</>}
+               </div>
+             </div>
+             <Link href="/products" className="block text-center border border-border py-3 text-xs uppercase tracking-widest">Continue Shopping</Link>
+diff --git a/app/signup/page.js b/app/signup/page.js
+index 0968b53..6c485fc 100644
+--- a/app/signup/page.js
++++ b/app/signup/page.js
+@@ -13,6 +13,7 @@ function Signup() {
+   const next = sp.get('next') || '/account'
+   const [form, setForm] = useState({ fullName:'', email:'', password:'' })
+   const [loading, setLoading] = useState(false)
++  const [gLoading, setGLoading] = useState(false)
+   const submit = async (e) => {
+     e.preventDefault(); setLoading(true)
+     const sb = getSupabaseBrowser()
+@@ -22,6 +23,16 @@ function Signup() {
+     if (data.session) { toast.success('Account created'); router.push(next) }
+     else { toast.success('Check your email to verify your account.'); router.push('/login') }
+   }
++  const google = async () => {
++    setGLoading(true)
++    const sb = getSupabaseBrowser()
++    const origin = typeof window !== 'undefined' ? window.location.origin : ''
++    const { error } = await sb.auth.signInWithOAuth({
++      provider: 'google',
++      options: { redirectTo: `${origin}/auth/callback?next=${encodeURIComponent(next)}` }
++    })
++    if (error) { setGLoading(false); toast.error(error.message) }
++  }
+   return (
+     <div>
+       <SiteHeader/>
+@@ -29,14 +40,19 @@ function Signup() {
+         <div className="max-w-md mx-auto">
+           <h1 className="font-serif text-3xl text-center">Create your account</h1>
+           <p className="text-sm text-muted-foreground text-center mt-2">Faster checkout, order tracking & wishlist</p>
+-          <form onSubmit={submit} className="mt-8 space-y-4">
++          <button onClick={google} disabled={gLoading} type="button" className="mt-8 w-full h-12 border border-border bg-background text-sm inline-flex items-center justify-center gap-3 hover:bg-muted disabled:opacity-60" data-testid="google-signup-btn">
++            <svg viewBox="0 0 24 24" className="h-5 w-5" aria-hidden="true"><path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/><path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.99.66-2.26 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/><path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z"/><path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84C6.71 7.31 9.14 5.38 12 5.38z"/></svg>
++            {gLoading ? 'Redirecting…' : 'Continue with Google'}
++          </button>
++          <div className="my-6 flex items-center gap-4"><div className="flex-1 h-px bg-border"/><span className="text-xs uppercase tracking-widest text-muted-foreground">or</span><div className="flex-1 h-px bg-border"/></div>
++          <form onSubmit={submit} className="space-y-4">
+             <label className="block"><span className="text-xs uppercase tracking-widest text-muted-foreground">Full name</span>
+-              <input required value={form.fullName} onChange={e=>setForm({...form,fullName:e.target.value})} className="mt-1 w-full h-11 px-3 border border-border bg-background text-sm"/></label>
++              <input required value={form.fullName} onChange={e=>setForm({...form,fullName:e.target.value})} className="mt-1 w-full h-11 px-3 border border-border bg-background text-sm" data-testid="signup-name"/></label>
+             <label className="block"><span className="text-xs uppercase tracking-widest text-muted-foreground">Email</span>
+-              <input required type="email" value={form.email} onChange={e=>setForm({...form,email:e.target.value})} className="mt-1 w-full h-11 px-3 border border-border bg-background text-sm"/></label>
++              <input required type="email" value={form.email} onChange={e=>setForm({...form,email:e.target.value})} className="mt-1 w-full h-11 px-3 border border-border bg-background text-sm" data-testid="signup-email"/></label>
+             <label className="block"><span className="text-xs uppercase tracking-widest text-muted-foreground">Password (min 6)</span>
+-              <input required minLength={6} type="password" value={form.password} onChange={e=>setForm({...form,password:e.target.value})} className="mt-1 w-full h-11 px-3 border border-border bg-background text-sm"/></label>
+-            <button disabled={loading} className="w-full h-12 bg-primary text-primary-foreground text-sm uppercase tracking-widest">{loading?'Creating…':'Create Account'}</button>
++              <input required minLength={6} type="password" value={form.password} onChange={e=>setForm({...form,password:e.target.value})} className="mt-1 w-full h-11 px-3 border border-border bg-background text-sm" data-testid="signup-password"/></label>
++            <button disabled={loading} className="w-full h-12 bg-primary text-primary-foreground text-sm uppercase tracking-widest" data-testid="signup-submit">{loading?'Creating…':'Create Account'}</button>
+           </form>
+           <div className="text-sm text-center mt-6 text-muted-foreground">Already have an account? <Link href={`/login?next=${encodeURIComponent(next)}`} className="underline text-foreground">Sign in</Link></div>
+         </div>
+diff --git a/components/site-header.js b/components/site-header.js
+index 80b2b56..05fd8a8 100644
+--- a/components/site-header.js
++++ b/components/site-header.js
+@@ -64,6 +64,7 @@ export default function SiteHeader() {
+   const openCart = () => window.dispatchEvent(new Event('cart:open'))
+ 
+   return (
++    <>
+     <header className="sticky top-0 z-40 bg-background/95 backdrop-blur border-b border-border/60">
+       {announcement && (<div className="bg-primary text-primary-foreground text-xs text-center py-2 px-4 tracking-wider">{announcement}</div>)}
+       <div className="hidden md:flex bg-primary/95 text-primary-foreground text-[11px]">
+@@ -95,7 +96,6 @@ export default function SiteHeader() {
+             <Link href={user ? '/account' : '/login'} aria-label="Account" className="p-2 hover:opacity-70"><User className="h-5 w-5"/></Link>
+             <Link href="/wishlist" aria-label="Wishlist" className="hidden sm:inline-flex p-2 hover:opacity-70"><Heart className="h-5 w-5"/></Link>
+             <button aria-label="Cart" onClick={openCart} className="relative p-2 hover:opacity-70"><ShoppingBag className="h-5 w-5"/>{cartCount>0 && <span className="absolute -top-0.5 -right-0.5 bg-gold-500 text-primary-foreground rounded-full text-[10px] w-5 h-5 grid place-items-center font-medium">{cartCount}</span>}</button>
+-            {isAdmin && <Link href="/admin" className="hidden lg:inline-flex text-xs uppercase tracking-widest ml-2 px-3 py-2 border border-gold-500 text-gold-600 rounded-sm hover:bg-gold-500 hover:text-white transition">Admin</Link>}
+           </div>
+         </div>
+         {openSearch && (
+@@ -112,21 +112,27 @@ export default function SiteHeader() {
+           </div>
+         )}
+       </div>
++    </header>
+ 
+-      {/* Backdrop overlay */}
++      {/* Backdrop overlay — sibling to header so fixed positioning is not affected by header's stacking context */}
+       <div
+-        className={`fixed inset-0 z-40 bg-black/50 md:hidden transition-opacity duration-300 ${mobileOpen ? 'opacity-100 pointer-events-auto' : 'opacity-0 pointer-events-none'}`}
++        className={`fixed inset-0 z-[60] bg-black/50 md:hidden transition-opacity duration-300 ${mobileOpen ? 'opacity-100 pointer-events-auto' : 'opacity-0 pointer-events-none'}`}
+         onClick={()=>setMobileOpen(false)}
+         aria-hidden="true"
++        data-testid="mobile-menu-backdrop"
+       />
+ 
+       {/* Mobile menu drawer — slides in from the LEFT */}
+       <div
+-        className={`fixed inset-y-0 left-0 z-50 w-[85%] max-w-sm bg-background md:hidden overflow-y-auto shadow-2xl transform transition-transform duration-300 ease-out ${mobileOpen ? 'translate-x-0' : '-translate-x-full'}`}
++        className={`fixed inset-y-0 left-0 z-[70] w-[85%] max-w-sm bg-background md:hidden overflow-y-auto shadow-2xl transform transition-transform duration-300 ease-out ${mobileOpen ? 'translate-x-0' : '-translate-x-full'}`}
++        role="dialog"
++        aria-label="Main menu"
++        aria-hidden={!mobileOpen}
++        data-testid="mobile-menu-drawer"
+       >
+         <div className="container-tight flex items-center justify-between h-16 border-b border-border">
+           <BrandLogo variant="light" size="sm"/>
+-          <button onClick={()=>setMobileOpen(false)} aria-label="Close" className="p-2 -mr-2"><X className="h-6 w-6"/></button>
++          <button onClick={()=>setMobileOpen(false)} aria-label="Close" className="p-2 -mr-2" data-testid="mobile-menu-close"><X className="h-6 w-6"/></button>
+         </div>
+         <nav className="flex flex-col gap-1 p-4 text-lg">
+           {NAV.map(n => (
+@@ -137,9 +143,8 @@ export default function SiteHeader() {
+           ))}
+           <Link href={user ? '/account' : '/login'} onClick={()=>setMobileOpen(false)} className="py-3 border-b border-border">Account</Link>
+           <Link href="/wishlist" onClick={()=>setMobileOpen(false)} className="py-3 border-b border-border">Wishlist</Link>
+-          {isAdmin && <Link href="/admin" onClick={()=>setMobileOpen(false)} className="py-3 border-b border-border text-gold-600">Admin Panel</Link>}
+         </nav>
+       </div>
+-    </header>
++    </>
+   )
+ }
+diff --git a/lib/email.js b/lib/email.js
+index 49d6209..c8df9e2 100644
+--- a/lib/email.js
++++ b/lib/email.js
+@@ -32,6 +32,17 @@ function shell({ b, title, preheader, body, cta }) {
+   return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${esc(title)}</title></head><body style="margin:0;padding:0;background:#f8f2e6;font-family:-apple-system,'Segoe UI',Roboto,sans-serif;color:#1c1917"><span style="display:none;visibility:hidden;opacity:0;color:transparent;height:0;width:0;overflow:hidden">${esc(preheader||'')}</span><div style="max-width:600px;margin:0 auto;padding:24px 12px"><div style="background:#3B1F1A;padding:28px;text-align:center;border-radius:10px 10px 0 0">${logo}<div style="color:#C7A25A;font-size:11px;letter-spacing:2px;margin-top:6px;text-transform:uppercase">${esc(b.tagline||'')}</div></div><div style="background:#ffffff;padding:32px;border:1px solid #E9D8B5;border-top:none">${body}${cta?`<div style="text-align:center;margin-top:24px"><a href="${cta.href}" style="display:inline-block;background:#3B1F1A;color:#F5E9CE;padding:14px 28px;text-decoration:none;letter-spacing:2px;font-size:13px;text-transform:uppercase">${esc(cta.label)}</a></div>`:''}</div><div style="background:#3B1F1A;padding:20px;color:#E9D8B5;font-size:12px;text-align:center;border-radius:0 0 10px 10px"><div style="opacity:0.85">${esc(b.address)}</div><div style="opacity:0.85;margin-top:4px">${esc(b.support_phone)} · <a href="mailto:${esc(b.support_email)}" style="color:#E9D8B5">${esc(b.support_email)}</a></div><div style="margin-top:8px"><a href="${esc(b.instagram)}" style="color:#C7A25A;margin:0 6px">Instagram</a>·<a href="${esc(b.facebook)}" style="color:#C7A25A;margin:0 6px">Facebook</a></div><div style="margin-top:10px;opacity:0.6">© ${new Date().getFullYear()} ${esc(b.name)}</div></div></div></body></html>`
+ }
+ 
++export async function sendCODOrderConfirmation({ to, order }) {
++  if (!resend || !to) return { skipped: true }
++  const b = await brand()
++  const rows = (order.items||[]).map(i => `<tr><td style="padding:12px 0;border-bottom:1px solid #f0e5ce;font-size:14px">${esc(i.name)}<div style="color:#8a7867;font-size:12px">${[i.size,i.color].filter(Boolean).map(esc).join(' · ')} · Qty ${i.quantity}</div></td><td style="padding:12px 0;border-bottom:1px solid #f0e5ce;text-align:right;font-size:14px">₹${Number(i.subtotal).toLocaleString('en-IN')}</td></tr>`).join('')
++  const body = `<h1 style="font-family:Georgia,serif;color:#3B1F1A;margin:0 0 8px;font-size:26px">Order placed — Pay on Delivery</h1><p style="color:#5f544a;margin:0 0 16px">Order <strong>${esc(order.order_number)}</strong> · placed ${new Date(order.created_at||Date.now()).toLocaleDateString('en-IN')}</p><div style="margin:0 0 20px;padding:14px 16px;background:#fff7e6;border-left:4px solid #C7A25A;border-radius:4px;color:#3B1F1A"><strong>Amount to pay on delivery: ₹${Number(order.total).toLocaleString('en-IN')}</strong><div style="font-size:13px;color:#5f544a;margin-top:4px">Please keep the exact amount ready when your parcel arrives.</div></div><table style="width:100%;border-collapse:collapse;margin-top:8px">${rows}</table><table style="width:100%;margin-top:12px;font-size:14px"><tr><td style="color:#5f544a;padding:4px 0">Subtotal</td><td style="text-align:right">₹${Number(order.subtotal).toLocaleString('en-IN')}</td></tr>${order.discount>0?`<tr><td style="color:#059669;padding:4px 0">Discount</td><td style="text-align:right;color:#059669">− ₹${Number(order.discount).toLocaleString('en-IN')}</td></tr>`:''}<tr><td style="color:#5f544a;padding:4px 0">Shipping</td><td style="text-align:right">${order.shipping>0?'₹'+Number(order.shipping).toLocaleString('en-IN'):'Free'}</td></tr>${order.cod_fee>0?`<tr><td style="color:#5f544a;padding:4px 0">COD handling</td><td style="text-align:right">₹${Number(order.cod_fee).toLocaleString('en-IN')}</td></tr>`:''}<tr><td style="padding:10px 0;font-weight:700;border-top:2px solid #3B1F1A;color:#3B1F1A;font-size:16px">Total (Pay on Delivery)</td><td style="text-align:right;padding:10px 0;font-weight:700;border-top:2px solid #3B1F1A;color:#3B1F1A;font-size:16px">₹${Number(order.total).toLocaleString('en-IN')}</td></tr></table><div style="margin-top:24px;padding:16px;background:#faf5e8;border-radius:6px"><div style="font-weight:600;margin-bottom:6px;color:#3B1F1A">Shipping to</div><div style="color:#5f544a;font-size:13px;line-height:1.7">${esc(order.shipping_address?.name||'')}<br>${esc(order.shipping_address?.line1||'')}${order.shipping_address?.line2?', '+esc(order.shipping_address.line2):''}${order.shipping_address?.landmark?'<br>Landmark: '+esc(order.shipping_address.landmark):''}<br>${esc(order.shipping_address?.city||'')}, ${esc(order.shipping_address?.state||'')} ${esc(order.shipping_address?.pincode||'')}<br>${esc(order.shipping_address?.phone||'')}</div></div><p style="color:#5f544a;font-size:13px;margin-top:20px">Your order is being prepared. We’ll email you tracking as soon as it ships. Please keep <strong>₹${Number(order.total).toLocaleString('en-IN')}</strong> ready in cash for the delivery partner.</p>`
++  try {
++    const r = await resend.emails.send({ from: await fromLine(), to, subject: `Order placed — Pay on Delivery ${order.order_number} • ${b.name}`, html: shell({ b, title:'Order placed — COD', preheader:`Pay ₹${Number(order.total).toLocaleString('en-IN')} on delivery for order ${order.order_number}`, body, cta: { label: 'View Order', href: `${BASE}/orders/${order.id}` } }) })
++    return { ok: true, id: r?.data?.id }
++  } catch (e) { console.error('cod email fail', e); return { ok: false, error: e.message } }
++}
++
+ export async function sendOrderConfirmation({ to, order }) {
+   if (!resend || !to) return { skipped: true }
+   const b = await brand()
+diff --git a/lib/supabase/admin.js b/lib/supabase/admin.js
+index 0a43b52..86769b7 100644
+--- a/lib/supabase/admin.js
++++ b/lib/supabase/admin.js
+@@ -1,13 +1,18 @@
+ import { createClient } from '@supabase/supabase-js'
+ 
+ // Server-only client using the service role key. Bypasses RLS. Never expose to browser.
++// Returns null if env vars are missing (never throws) so callers can degrade gracefully.
+ let _admin
+ export function getSupabaseAdmin() {
+   if (_admin) return _admin
+-  _admin = createClient(
+-    process.env.NEXT_PUBLIC_SUPABASE_URL,
+-    process.env.SUPABASE_SERVICE_ROLE_KEY,
+-    { auth: { persistSession: false, autoRefreshToken: false } }
+-  )
+-  return _admin
++  const url = process.env.NEXT_PUBLIC_SUPABASE_URL
++  const key = process.env.SUPABASE_SERVICE_ROLE_KEY
++  if (!url || !key) return null
++  try {
++    _admin = createClient(url, key, { auth: { persistSession: false, autoRefreshToken: false } })
++    return _admin
++  } catch (e) {
++    console.error('[supabase-admin] init failed:', e?.message)
++    return null
++  }
+ }
+diff --git a/lib/validators.js b/lib/validators.js
+index 84dfa39..7d944bc 100644
+--- a/lib/validators.js
++++ b/lib/validators.js
+@@ -9,8 +9,10 @@ export const authSchema = z.object({
+ export const addressSchema = z.object({
+   name: z.string().min(1).max(120),
+   phone: z.string().min(6).max(20),
++  alt_phone: z.string().max(20).optional().nullable(),
+   line1: z.string().min(1).max(200),
+   line2: z.string().max(200).optional().nullable(),
++  landmark: z.string().max(200).optional().nullable(),
+   city: z.string().min(1).max(100),
+   state: z.string().min(1).max(100),
+   pincode: z.string().min(4).max(10),
+@@ -31,6 +33,8 @@ export const checkoutSchema = z.object({
+   address: addressSchema,
+   items: z.array(cartItemSchema).min(1).max(50),
+   coupon: z.string().max(40).optional().nullable(),
++  payment_method: z.enum(['online','cod']).optional(),
++  notes: z.string().max(500).optional().nullable(),
+ })
+ 
+ export const productSchema = z.object({
+@@ -47,10 +51,16 @@ export const productSchema = z.object({
+   is_featured: z.boolean().default(false),
+   is_new: z.boolean().default(false),
+   is_trending: z.boolean().default(false),
++  is_bestseller: z.boolean().default(false),
+   brand: z.string().max(80).optional().nullable(),
+   sizes: z.array(z.string()).default([]),
+   colors: z.array(z.string()).default([]),
+   tags: z.array(z.string()).default([]),
++  material: z.string().max(200).optional().nullable(),
++  weight_grams: z.coerce.number().min(0).optional().nullable(),
++  care_instructions: z.string().max(1000).optional().nullable(),
++  low_stock_threshold: z.coerce.number().int().min(0).optional().nullable(),
++  set_group: z.string().max(80).optional().nullable(),
+ })
+ 
+ export const reviewSchema = z.object({
+diff --git a/supabase/migration_features.sql b/supabase/migration_features.sql
+new file mode 100644
+index 0000000..088c2a4
+--- /dev/null
++++ b/supabase/migration_features.sql
+@@ -0,0 +1,41 @@
++-- =============================================================
++-- Alankar Fashions — Feature migration (COD + Product/Category expansion)
++-- SAFE / ADDITIVE — never drops or alters existing data.
++-- Run this once in Supabase SQL editor.
++-- =============================================================
++
++-- Orders: payment_method + cod_fee + notes (nullable, additive)
++alter table if exists public.orders add column if not exists payment_method text default 'online';
++alter table if exists public.orders add column if not exists cod_fee numeric(12,2);
++alter table if exists public.orders add column if not exists notes text;
++
++-- Allow new payment_status value: 'cod_pending' (schema uses check constraint or text; if constraint exists, this is a no-op)
++-- If your schema has a CHECK constraint on payment_status, run the following (uncomment) to relax it:
++-- alter table public.orders drop constraint if exists orders_payment_status_check;
++-- alter table public.orders add constraint orders_payment_status_check check (payment_status in ('pending','paid','failed','refunded','cod_pending'));
++
++-- Products: jewellery-specific fields
++alter table if exists public.products add column if not exists material text;
++alter table if exists public.products add column if not exists weight_grams numeric(10,2);
++alter table if exists public.products add column if not exists care_instructions text;
++alter table if exists public.products add column if not exists low_stock_threshold integer;
++alter table if exists public.products add column if not exists set_group text;
++alter table if exists public.products add column if not exists is_bestseller boolean default false;
++
++-- Categories: banner, description, is_featured
++alter table if exists public.categories add column if not exists banner_url text;
++alter table if exists public.categories add column if not exists description text;
++alter table if exists public.categories add column if not exists is_featured boolean default false;
++alter table if exists public.categories add column if not exists updated_at timestamptz default now();
++
++-- Settings: seed COD config with sensible defaults (only inserts if row missing)
++insert into public.settings (key, value) values
++  ('cod', '{"enabled":true,"fee":0,"min_order":0,"max_order":15000}'::jsonb)
++on conflict (key) do nothing;
++
++-- Helpful index for admin listings
++create index if not exists idx_orders_payment_method on public.orders (payment_method);
++create index if not exists idx_products_bestseller on public.products (is_bestseller) where is_bestseller = true;
++create index if not exists idx_categories_featured on public.categories (is_featured) where is_featured = true;
++
++select 'Alankar Fashions feature migration applied' as status;
+-- 
+2.39.5
+
