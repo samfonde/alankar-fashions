@@ -9,10 +9,23 @@ alter table if exists public.orders add column if not exists payment_method text
 alter table if exists public.orders add column if not exists cod_fee numeric(12,2);
 alter table if exists public.orders add column if not exists notes text;
 
--- Allow new payment_status value: 'cod_pending' (schema uses check constraint or text; if constraint exists, this is a no-op)
--- If your schema has a CHECK constraint on payment_status, run the following (uncomment) to relax it:
--- alter table public.orders drop constraint if exists orders_payment_status_check;
--- alter table public.orders add constraint orders_payment_status_check check (payment_status in ('pending','paid','failed','refunded','cod_pending'));
+-- Allow new payment_status value: 'cod_pending' (required for COD orders).
+-- Live production has an existing CHECK constraint on orders.payment_status limiting values to
+-- ('pending','paid','failed','refunded'). We drop and re-add it with 'cod_pending' included.
+-- This is SAFE: no existing rows use 'cod_pending', so the new constraint validates cleanly.
+do $$
+begin
+  if exists (
+    select 1 from information_schema.table_constraints
+    where table_schema='public' and table_name='orders'
+      and constraint_type='CHECK' and constraint_name='orders_payment_status_check'
+  ) then
+    alter table public.orders drop constraint orders_payment_status_check;
+  end if;
+  alter table public.orders
+    add constraint orders_payment_status_check
+    check (payment_status in ('pending','paid','failed','refunded','cod_pending'));
+end $$;
 
 -- Products: jewellery-specific fields
 alter table if exists public.products add column if not exists material text;

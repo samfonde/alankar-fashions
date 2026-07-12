@@ -114,23 +114,47 @@ export default function SiteHeader() {
       </div>
     </header>
 
-      {/* Backdrop overlay — sibling to header so fixed positioning is not affected by header's stacking context */}
+      {/* Backdrop overlay — inline styles to bypass any Tailwind JIT class-detection issues */}
       <div
-        className={`fixed inset-0 z-[60] bg-black/50 md:hidden transition-opacity duration-300 ${mobileOpen ? 'opacity-100 pointer-events-auto' : 'opacity-0 pointer-events-none'}`}
         onClick={()=>setMobileOpen(false)}
         aria-hidden="true"
         data-testid="mobile-menu-backdrop"
+        className="md:hidden"
+        style={{
+          position: 'fixed',
+          inset: 0,
+          zIndex: 998,
+          backgroundColor: 'rgba(0,0,0,0.55)',
+          opacity: mobileOpen ? 1 : 0,
+          pointerEvents: mobileOpen ? 'auto' : 'none',
+          transition: 'opacity 280ms ease-out',
+        }}
       />
 
-      {/* Mobile menu drawer — slides in from the LEFT */}
+      {/* Mobile menu drawer — inline styles guarantee transform + transition regardless of Tailwind build */}
       <div
-        className={`fixed inset-y-0 left-0 z-[70] w-[85%] max-w-sm bg-background md:hidden overflow-y-auto shadow-2xl transform transition-transform duration-300 ease-out ${mobileOpen ? 'translate-x-0' : '-translate-x-full'}`}
         role="dialog"
         aria-label="Main menu"
         aria-hidden={!mobileOpen}
         data-testid="mobile-menu-drawer"
+        className="md:hidden"
+        style={{
+          position: 'fixed',
+          top: 0,
+          bottom: 0,
+          left: 0,
+          zIndex: 999,
+          width: '85%',
+          maxWidth: '384px',
+          backgroundColor: 'var(--background, #fff)',
+          overflowY: 'auto',
+          boxShadow: '0 20px 50px rgba(0,0,0,0.3)',
+          transform: mobileOpen ? 'translateX(0)' : 'translateX(-100%)',
+          transition: 'transform 300ms cubic-bezier(0.32, 0.72, 0, 1)',
+          willChange: 'transform',
+        }}
       >
-        <div className="container-tight flex items-center justify-between h-16 border-b border-border">
+        <div className="flex items-center justify-between h-16 border-b border-border px-4">
           <BrandLogo variant="light" size="sm"/>
           <button onClick={()=>setMobileOpen(false)} aria-label="Close" className="p-2 -mr-2" data-testid="mobile-menu-close"><X className="h-6 w-6"/></button>
         </div>

@@ -107,7 +107,7 @@ create table if not exists public.orders (
   email text,
   phone text,
   status text not null default 'pending' check (status in ('pending','processing','shipped','out_for_delivery','delivered','cancelled','refunded')),
-  payment_status text not null default 'pending' check (payment_status in ('pending','paid','failed','refunded')),
+  payment_status text not null default 'pending' check (payment_status in ('pending','paid','failed','refunded','cod_pending')),
   subtotal numeric(10,2) not null default 0,
   discount numeric(10,2) default 0,
   shipping numeric(10,2) default 0,
