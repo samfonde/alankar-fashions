@@ -13,6 +13,12 @@ export default function AdminOrders(){
   const load = () => fetch('/api/admin/orders').then(r=>r.json()).then(d=>setItems(d.orders||[]))
   useEffect(() => { load() }, [])
   const updateStatus = async (id, status, note) => { const r = await fetch(`/api/admin/orders/${id}`, { method:'PATCH', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ status, note }) }); if (!r.ok) return toast.error('Failed'); toast.success(`Order updated: ${status}`); load(); if (detail) setDetail({...detail, status}) }
+  const markCodCollected = async (id) => {
+    if (!confirm('Mark COD payment as collected? This will decrement stock.')) return
+    const r = await fetch(`/api/admin/orders/${id}/cod-collected`, { method:'POST' })
+    if (!r.ok) { const d = await r.json(); return toast.error(d.error||'Failed') }
+    toast.success('Marked as paid'); load(); if (detail) setDetail({...detail, payment_status: 'paid'})
+  }
   const filtered = items.filter(o => !filter || o.status === filter)
   return (
     <div className="space-y-4">
@@ -30,7 +36,10 @@ export default function AdminOrders(){
                 <td className="p-3"><div>{o.email}</div><div className="text-xs text-muted-foreground">{o.phone}</div></td>
                 <td className="p-3 text-muted-foreground">{dateFmt(o.created_at)}</td>
                 <td className="p-3">{inr(o.total)}</td>
-                <td className="p-3"><span className={`text-xs px-2 py-1 ${o.payment_status==='paid'?'bg-emerald-50 text-emerald-800':'bg-amber-50 text-amber-800'}`}>{o.payment_status}</span></td>
+                <td className="p-3">
+                  <span className={`text-xs px-2 py-1 ${o.payment_status==='paid'?'bg-emerald-50 text-emerald-800':o.payment_status==='cod_pending'?'bg-orange-50 text-orange-800':'bg-amber-50 text-amber-800'}`}>{o.payment_status}</span>
+                  {o.payment_method === 'cod' && <span className="ml-1 text-[10px] px-1.5 py-0.5 bg-orange-100 text-orange-900 uppercase tracking-widest" data-testid={`order-cod-badge-${o.id}`}>COD</span>}
+                </td>
                 <td className="p-3"><span className="text-xs uppercase tracking-widest">{o.status}</span></td>
               </tr>
             ))}
@@ -65,6 +74,9 @@ export default function AdminOrders(){
                 ))}
               </div>
               <div className="flex items-center gap-2 pt-3 border-t border-border">
+                {detail.payment_method === 'cod' && detail.payment_status !== 'paid' && (
+                  <button onClick={()=>markCodCollected(detail.id)} className="inline-flex items-center gap-2 h-9 px-3 bg-orange-600 text-white text-xs uppercase tracking-widest" data-testid="admin-mark-cod-collected">Mark Payment Collected</button>
+                )}
                 <a href={`/api/invoice/${detail.id}`} target="_blank" rel="noopener" className="inline-flex items-center gap-2 h-9 px-3 border border-border text-xs uppercase tracking-widest">Invoice / Print</a>
                 <a href={`https://wa.me/${(detail.phone||'').replace(/[^0-9]/g,'')}?text=${encodeURIComponent(`Hi ${detail.shipping_address?.name||''}! Your order ${detail.order_number} from Alankar Fashions is confirmed. Total: ₹${detail.total}. Thank you!`)}`} target="_blank" rel="noopener" className="inline-flex items-center gap-2 h-9 px-3 border border-border text-xs uppercase tracking-widest">WhatsApp Customer</a>
               </div>

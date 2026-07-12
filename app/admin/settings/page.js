@@ -9,6 +9,7 @@ export default function AdminSettings(){
   useEffect(()=>{ load() },[])
   const upsert = async (key, value) => { const r = await fetch('/api/admin/settings', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ key, value }) }); if(!r.ok){const d=await r.json();return toast.error(d.error||'Failed')} toast.success('Saved'); load() }
   const rp = items.find(s => s.key === 'payment_razorpay')?.value || {}
+  const cod = items.find(s => s.key === 'cod')?.value || {}
   const brand = items.find(s => s.key === 'brand')?.value || {}
   const analytics = items.find(s => s.key === 'analytics')?.value || {}
   const seo = items.find(s => s.key === 'seo')?.value || {}
@@ -23,6 +24,10 @@ export default function AdminSettings(){
 
       <Section title="Payment — Razorpay" desc="Paste live keys once ready. Test keys start with rzp_test_. Set webhook URL to /api/webhooks/razorpay in Razorpay Dashboard.">
         <RazorpayForm initial={rp} onSave={v => upsert('payment_razorpay', v)}/>
+      </Section>
+
+      <Section title="Payment — Cash on Delivery (COD)" desc="Enable COD for the Indian market. Optional handling fee & min/max order limits.">
+        <CODForm initial={cod} onSave={v => upsert('cod', v)}/>
       </Section>
 
       <Section title="Analytics" desc="Meta Pixel and Google Analytics 4 auto-inject site-wide with e-commerce events.">
@@ -157,3 +162,20 @@ function EmailTest({ defaultTo }){
 }
 
 function F({label, children}) { return <label className="block"><span className="text-xs uppercase tracking-widest text-muted-foreground">{label}</span><div className="mt-1">{children}</div></label> }
+
+function CODForm({ initial, onSave }){
+  const [f,setF] = useState({ enabled:true, fee:0, min_order:0, max_order:0, ...(initial||{}) })
+  useEffect(()=>{ setF({ enabled:true, fee:0, min_order:0, max_order:0, ...(initial||{}) }) }, [initial])
+  return (
+    <div className="space-y-3">
+      <label className="inline-flex items-center gap-2"><input type="checkbox" checked={f.enabled!==false} onChange={e=>setF({...f,enabled:e.target.checked})} data-testid="cod-enabled-toggle"/> Enable Cash on Delivery</label>
+      <div className="grid md:grid-cols-3 gap-3">
+        <F label="COD handling fee (₹)"><input type="number" min="0" value={f.fee||0} onChange={e=>setF({...f,fee:Number(e.target.value||0)})} className="w-full h-10 px-3 border border-border" data-testid="cod-fee-input"/></F>
+        <F label="Minimum order for COD (₹, 0 = no min)"><input type="number" min="0" value={f.min_order||0} onChange={e=>setF({...f,min_order:Number(e.target.value||0)})} className="w-full h-10 px-3 border border-border" data-testid="cod-min-input"/></F>
+        <F label="Maximum order for COD (₹, 0 = no max)"><input type="number" min="0" value={f.max_order||0} onChange={e=>setF({...f,max_order:Number(e.target.value||0)})} className="w-full h-10 px-3 border border-border" data-testid="cod-max-input"/></F>
+      </div>
+      <div className="text-xs text-muted-foreground">Recommended for jewellery: set a maximum (e.g., ₹15,000) to limit fraud & return-risk on high-value COD orders.</div>
+      <button onClick={()=>onSave(f)} className="inline-flex items-center gap-2 h-10 px-4 bg-primary text-primary-foreground text-xs uppercase tracking-widest" data-testid="cod-save-btn"><Save className="h-4 w-4"/> Save COD settings</button>
+    </div>
+  )
+}

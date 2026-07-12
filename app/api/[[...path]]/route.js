@@ -57,6 +57,22 @@ async function handler(request, { params }) {
     // ------------- HEALTH -------------
     if (route === '/health' && method === 'GET') return json({ ok: true, ts: Date.now() })
 
+    // ------------- COD CONFIG (public) -------------
+    if (route === '/cod-config' && method === 'GET') {
+      try {
+        const admin = getSupabaseAdmin()
+        if (!admin) return json({ config: { enabled: true, fee: 0, min_order: 0, max_order: 0 } })
+        const { data } = await admin.from('settings').select('value').eq('key','cod').single()
+        const v = data?.value && typeof data.value === 'object' ? data.value : {}
+        return json({ config: {
+          enabled: v.enabled !== false,
+          fee: Number(v.fee || 0),
+          min_order: Number(v.min_order || 0),
+          max_order: Number(v.max_order || 0),
+        } })
+      } catch { return json({ config: { enabled: true, fee: 0, min_order: 0, max_order: 0 } }) }
+    }
+
     // ------------- BRAND (public safe subset) -------------
     if (route === '/brand' && method === 'GET') {
       try {
@@ -148,6 +164,14 @@ async function handler(request, { params }) {
         const fs = await import('fs')
         const p = await import('path')
         const sql = fs.readFileSync(p.default.join(process.cwd(), 'supabase', 'migration_alankar.sql'), 'utf8')
+        return new NextResponse(sql, { headers: { 'content-type': 'text/plain' } })
+      } catch (e) { return json({ error: e.message }, 500) }
+    }
+    if (route === '/setup/migration-features' && method === 'GET') {
+      try {
+        const fs = await import('fs')
+        const p = await import('path')
+        const sql = fs.readFileSync(p.default.join(process.cwd(), 'supabase', 'migration_features.sql'), 'utf8')
         return new NextResponse(sql, { headers: { 'content-type': 'text/plain' } })
       } catch (e) { return json({ error: e.message }, 500) }
     }
@@ -321,25 +345,57 @@ async function handler(request, { params }) {
         }
       }
       const shipping = subtotal >= 999 ? 0 : 79
-      const total = Math.max(0, subtotal - discount + shipping)
+
+      // COD handling
+      const payment_method = body.payment_method === 'cod' ? 'cod' : 'online'
+      let codFee = 0
+      if (payment_method === 'cod') {
+        const { data: codRow } = await admin.from('settings').select('value').eq('key','cod').single()
+        const cfg = codRow?.value && typeof codRow.value === 'object' ? codRow.value : {}
+        if (cfg.enabled === false) return json({ error: 'COD is currently unavailable' }, 400)
+        const codMin = Number(cfg.min_order || 0)
+        const codMax = Number(cfg.max_order || 0)
+        if (codMin > 0 && subtotal < codMin) return json({ error: `COD requires minimum order of ₹${codMin}` }, 400)
+        if (codMax > 0 && subtotal > codMax) return json({ error: `COD not available for orders above ₹${codMax}` }, 400)
+        codFee = Number(cfg.fee || 0)
+      }
+      const total = Math.max(0, subtotal - discount + shipping + codFee)
 
       // Current user (may be null for guest)
       const sb = await getSupabaseServer()
       const { data: { user } } = await sb.auth.getUser()
 
+      const notes = typeof body.notes === 'string' ? body.notes.slice(0, 500) : null
+
       const order_number = orderNumber()
       const { data: order, error: oe } = await admin.from('orders').insert({
         order_number, user_id: user?.id || null,
         email: p.data.email, phone: p.data.phone,
-        status: 'pending', payment_status: 'pending',
+        status: payment_method === 'cod' ? 'processing' : 'pending',
+        payment_status: payment_method === 'cod' ? 'cod_pending' : 'pending',
+        payment_method,
         subtotal, discount, shipping, total,
+        cod_fee: codFee || null,
+        notes,
         coupon_code: couponCode,
         shipping_address: p.data.address,
         items: orderItems,
       }).select().single()
       if (oe) return json({ error: 'Could not create order: ' + oe.message }, 500)
 
-      // Razorpay order
+      // COD: skip Razorpay entirely, send COD confirmation email, no stock decrement here
+      if (payment_method === 'cod') {
+        try {
+          await admin.from('order_status_history').insert({ order_id: order.id, status: 'processing', note: 'COD order placed' })
+        } catch {}
+        try {
+          const { sendCODOrderConfirmation } = await import('@/lib/email')
+          sendCODOrderConfirmation({ to: order.email, order }).catch(()=>{})
+        } catch {}
+        return json({ order_id: order.id, order_number, total, cod: true, mode: 'cod' })
+      }
+
+      // Razorpay order (online payment)
       const { client, key_id } = await getRazorpay()
       let rzp_order_id = null, mode = 'test'
       if (client && key_id && !key_id.includes('placeholder')) {
@@ -603,13 +659,47 @@ async function handler(request, { params }) {
 
       // Categories
       if (route === '/admin/categories' && method === 'GET') { const { data } = await db.from('categories').select('*').order('sort_order'); return json({ categories: data||[] }) }
-      if (route === '/admin/categories' && method === 'POST') { const body = await request.json(); const { data, error } = await db.from('categories').insert(body).select().single(); if(error) return json({error:error.message},400); await audit(adm,'create','category',data.id,body); return json({ category: data }) }
+      if (route === '/admin/categories' && method === 'POST') {
+        const body = await request.json()
+        // Upsert: if id present -> update, else insert
+        if (body.id) {
+          const { id, ...rest } = body
+          const { data, error } = await db.from('categories').update({ ...rest, updated_at: new Date().toISOString() }).eq('id', id).select().single()
+          if (error) return json({ error: error.message }, 400)
+          await audit(adm, 'update', 'category', id, rest)
+          return json({ category: data })
+        }
+        const { data, error } = await db.from('categories').insert(body).select().single()
+        if (error) return json({ error: error.message }, 400)
+        await audit(adm, 'create', 'category', data.id, body)
+        return json({ category: data })
+      }
       if (route.startsWith('/admin/categories/') && method === 'DELETE') { await db.from('categories').delete().eq('id', path[2]); return json({ ok: true }) }
 
       // Orders
       if (route === '/admin/orders' && method === 'GET') {
         const { data } = await db.from('orders').select('*').order('created_at', { ascending: false })
         return json({ orders: data || [] })
+      }
+      if (route.startsWith('/admin/orders/') && path[3] === 'cod-collected' && method === 'POST') {
+        const id = path[2]
+        const { data: order } = await db.from('orders').select('*').eq('id', id).single()
+        if (!order) return json({ error: 'Not found' }, 404)
+        if (order.payment_method !== 'cod') return json({ error: 'Not a COD order' }, 400)
+        // Mark payment collected; decrement stock now (COD stock decrement happens on delivery)
+        await db.from('orders').update({ payment_status: 'paid', updated_at: new Date().toISOString() }).eq('id', id)
+        for (const it of order.items || []) {
+          try {
+            await db.rpc('decrement_stock', { p_id: it.product_id, qty: it.quantity })
+          } catch {
+            const { data: pr } = await db.from('products').select('stock,name').eq('id', it.product_id).single()
+            const newStock = Math.max(0, (pr?.stock || 0) - it.quantity)
+            await db.from('products').update({ stock: newStock }).eq('id', it.product_id)
+          }
+        }
+        await db.from('order_status_history').insert({ order_id: id, status: order.status, note: 'COD payment collected' })
+        await audit(adm, 'cod_collected', 'order', id, null)
+        return json({ ok: true })
       }
       if (route.startsWith('/admin/orders/') && method === 'PATCH') {
         const id = path[2]

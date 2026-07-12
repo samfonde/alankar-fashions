@@ -11,6 +11,7 @@ function OrderDetail({ id }) {
   const [data, setData] = useState(null)
   const sp = useSearchParams()
   const success = sp.get('success') === '1'
+  const isCod = sp.get('cod') === '1' || (data?.order?.payment_method === 'cod')
   useEffect(() => { fetch(`/api/orders/${id}`).then(r=>r.json()).then(setData) }, [id])
 
   if (!data) return <div><SiteHeader/><div className="container-tight py-10 skeleton h-64"/></div>
@@ -23,10 +24,14 @@ function OrderDetail({ id }) {
       <SiteHeader/>
       <main className="container-tight py-8 md:py-14">
         {success && (
-          <div className="mb-8 bg-emerald-50 text-emerald-900 border border-emerald-200 p-6 rounded-sm text-center">
+          <div className={`mb-8 ${o.payment_method==='cod'?'bg-orange-50 text-orange-900 border-orange-200':'bg-emerald-50 text-emerald-900 border-emerald-200'} border p-6 rounded-sm text-center`} data-testid="order-success-banner">
             <CheckCircle2 className="h-8 w-8 mx-auto"/>
-            <div className="font-serif text-2xl mt-2">Order confirmed</div>
-            <div className="text-sm mt-1">Thank you — a confirmation email is on its way to <strong>{o.email}</strong>.</div>
+            <div className="font-serif text-2xl mt-2">{o.payment_method==='cod' ? 'Order placed — Pay on Delivery' : 'Order confirmed'}</div>
+            <div className="text-sm mt-1">
+              {o.payment_method==='cod'
+                ? <>Please keep <strong>{inr(o.total)}</strong> ready in cash for the delivery partner. Confirmation email sent to <strong>{o.email}</strong>.</>
+                : <>Thank you — a confirmation email is on its way to <strong>{o.email}</strong>.</>}
+            </div>
           </div>
         )}
         <div className="flex justify-between items-start flex-wrap gap-4">
@@ -37,7 +42,7 @@ function OrderDetail({ id }) {
           </div>
           <div className="text-right">
             <div className="text-xs uppercase tracking-widest text-muted-foreground">Payment</div>
-            <div className={`text-sm ${o.payment_status==='paid'?'text-emerald-700':'text-amber-700'}`}>{o.payment_status.toUpperCase()}</div>
+            <div className={`text-sm ${o.payment_status==='paid'?'text-emerald-700':o.payment_status==='cod_pending'?'text-orange-700':'text-amber-700'}`}>{o.payment_method==='cod' ? 'COD · ' : ''}{o.payment_status.toUpperCase().replace(/_/g,' ')}</div>
             <div className="text-2xl font-semibold mt-1">{inr(o.total)}</div>
           </div>
         </div>
@@ -79,7 +84,8 @@ function OrderDetail({ id }) {
                 <div className="flex justify-between"><span className="text-muted-foreground">Subtotal</span><span>{inr(o.subtotal)}</span></div>
                 {o.discount>0 && <div className="flex justify-between text-emerald-700"><span>Discount</span><span>− {inr(o.discount)}</span></div>}
                 <div className="flex justify-between"><span className="text-muted-foreground">Shipping</span><span>{o.shipping>0?inr(o.shipping):'Free'}</span></div>
-                <div className="flex justify-between font-semibold pt-2 border-t border-border"><span>Total</span><span>{inr(o.total)}</span></div>
+                {o.cod_fee>0 && <div className="flex justify-between"><span className="text-muted-foreground">COD handling</span><span>{inr(o.cod_fee)}</span></div>}
+                <div className="flex justify-between font-semibold pt-2 border-t border-border"><span>Total{o.payment_method==='cod'?' (pay on delivery)':''}</span><span>{inr(o.total)}</span></div>
               </div>
             </div>
             <div className="border border-border p-5 bg-card">
@@ -87,8 +93,9 @@ function OrderDetail({ id }) {
               <div className="text-sm text-muted-foreground leading-relaxed">
                 {o.shipping_address?.name}<br/>
                 {o.shipping_address?.line1}{o.shipping_address?.line2?', '+o.shipping_address.line2:''}<br/>
+                {o.shipping_address?.landmark && <>Landmark: {o.shipping_address.landmark}<br/></>}
                 {o.shipping_address?.city}, {o.shipping_address?.state} {o.shipping_address?.pincode}<br/>
-                {o.shipping_address?.phone}
+                {o.shipping_address?.phone}{o.shipping_address?.alt_phone && <> · {o.shipping_address.alt_phone}</>}
               </div>
             </div>
             <Link href="/products" className="block text-center border border-border py-3 text-xs uppercase tracking-widest">Continue Shopping</Link>

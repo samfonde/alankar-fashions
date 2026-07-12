@@ -4,7 +4,7 @@ import { inr } from '@/lib/format'
 import { Plus, Pencil, Trash2, X, Upload } from 'lucide-react'
 import { toast } from 'sonner'
 
-const emptyP = { name:'', slug:'', description:'', price:0, discount_price:null, sku:'', images:[], category_id:null, stock:0, status:'published', is_featured:false, is_new:false, is_trending:false, brand:'Aurelia', sizes:[], colors:[], tags:[] }
+const emptyP = { name:'', slug:'', description:'', price:0, discount_price:null, sku:'', images:[], category_id:null, stock:0, status:'published', is_featured:false, is_new:false, is_trending:false, is_bestseller:false, brand:'Alankar Fashions', sizes:[], colors:[], tags:[], material:'', weight_grams:null, care_instructions:'', low_stock_threshold:5, set_group:'' }
 
 export default function AdminProducts(){
   const [items,setItems] = useState([])
@@ -15,7 +15,7 @@ export default function AdminProducts(){
   useEffect(() => { load() }, [])
   const save = async () => {
     if (!edit.name || !edit.slug || edit.price <= 0) return toast.error('Name, slug and price are required')
-    const payload = { ...edit, price: Number(edit.price), discount_price: edit.discount_price ? Number(edit.discount_price):null, stock: Number(edit.stock||0), sizes: Array.isArray(edit.sizes)?edit.sizes:String(edit.sizes||'').split(',').map(s=>s.trim()).filter(Boolean), colors: Array.isArray(edit.colors)?edit.colors:String(edit.colors||'').split(',').map(s=>s.trim()).filter(Boolean), tags: Array.isArray(edit.tags)?edit.tags:String(edit.tags||'').split(',').map(s=>s.trim()).filter(Boolean) }
+    const payload = { ...edit, price: Number(edit.price), discount_price: edit.discount_price ? Number(edit.discount_price):null, stock: Number(edit.stock||0), weight_grams: edit.weight_grams ? Number(edit.weight_grams) : null, low_stock_threshold: edit.low_stock_threshold !== '' && edit.low_stock_threshold != null ? Number(edit.low_stock_threshold) : null, sizes: Array.isArray(edit.sizes)?edit.sizes:String(edit.sizes||'').split(',').map(s=>s.trim()).filter(Boolean), colors: Array.isArray(edit.colors)?edit.colors:String(edit.colors||'').split(',').map(s=>s.trim()).filter(Boolean), tags: Array.isArray(edit.tags)?edit.tags:String(edit.tags||'').split(',').map(s=>s.trim()).filter(Boolean) }
     const url = edit.id ? `/api/admin/products/${edit.id}` : '/api/admin/products'
     const method = edit.id ? 'PATCH' : 'POST'
     const r = await fetch(url, { method, headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload) })
@@ -81,6 +81,11 @@ export default function AdminProducts(){
               <F label="Colors (comma separated)"><input value={Array.isArray(edit.colors)?edit.colors.join(','):edit.colors||''} onChange={e=>setEdit({...edit,colors:e.target.value})} className="w-full h-10 px-3 border border-border bg-background"/></F>
               <F label="Tags"><input value={Array.isArray(edit.tags)?edit.tags.join(','):edit.tags||''} onChange={e=>setEdit({...edit,tags:e.target.value})} className="w-full h-10 px-3 border border-border bg-background"/></F>
               <div className="md:col-span-2"><F label="Description"><textarea rows={4} value={edit.description||''} onChange={e=>setEdit({...edit,description:e.target.value})} className="w-full px-3 py-2 border border-border bg-background"/></F></div>
+              <F label="Material / Metal type"><input value={edit.material||''} onChange={e=>setEdit({...edit,material:e.target.value})} placeholder="e.g. Gold-plated brass, Oxidized silver, Kundan & pearl" className="w-full h-10 px-3 border border-border bg-background" data-testid="product-material"/></F>
+              <F label="Weight (grams, approx.)"><input type="number" step="0.1" value={edit.weight_grams||''} onChange={e=>setEdit({...edit,weight_grams:e.target.value})} placeholder="e.g. 45" className="w-full h-10 px-3 border border-border bg-background" data-testid="product-weight"/></F>
+              <div className="md:col-span-2"><F label="Care instructions"><textarea rows={2} value={edit.care_instructions||''} onChange={e=>setEdit({...edit,care_instructions:e.target.value})} placeholder="e.g. Avoid contact with water & perfume. Wipe clean with a soft cloth." className="w-full px-3 py-2 border border-border bg-background" data-testid="product-care"/></F></div>
+              <F label="Set group (link related items)"><input value={edit.set_group||''} onChange={e=>setEdit({...edit,set_group:e.target.value})} placeholder="e.g. kundan-bridal-set-A" className="w-full h-10 px-3 border border-border bg-background" data-testid="product-set-group"/></F>
+              <F label="Low-stock threshold (alert when stock ≤ this)"><input type="number" min="0" value={edit.low_stock_threshold ?? ''} onChange={e=>setEdit({...edit,low_stock_threshold:e.target.value})} placeholder="5" className="w-full h-10 px-3 border border-border bg-background" data-testid="product-low-stock"/></F>
               <div className="md:col-span-2">
                 <F label="Images">
                   <div className="grid grid-cols-4 gap-2 mb-2">
@@ -93,8 +98,8 @@ export default function AdminProducts(){
                 </F>
               </div>
               <div className="md:col-span-2 flex flex-wrap gap-4">
-                {[['is_featured','Featured'],['is_new','New Arrival'],['is_trending','Trending']].map(([k,l])=>(
-                  <label key={k} className="inline-flex items-center gap-2 text-sm"><input type="checkbox" checked={!!edit[k]} onChange={e=>setEdit({...edit,[k]:e.target.checked})}/> {l}</label>
+                {[['is_featured','Featured'],['is_new','New Arrival'],['is_trending','Trending'],['is_bestseller','Bestseller']].map(([k,l])=>(
+                  <label key={k} className="inline-flex items-center gap-2 text-sm"><input type="checkbox" checked={!!edit[k]} onChange={e=>setEdit({...edit,[k]:e.target.checked})} data-testid={`product-${k}`}/> {l}</label>
                 ))}
               </div>
             </div>
