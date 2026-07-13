@@ -1,7 +1,7 @@
 'use client'
 import Link from 'next/link'
 import { useEffect, useState } from 'react'
-import { Search, ShoppingBag, User, Heart, Menu, X, MapPin, Phone } from 'lucide-react'
+import { Search, ShoppingBag, User, Heart, Menu, X, MapPin, Phone, Plus, Minus } from 'lucide-react'
 import { getSupabaseBrowser } from '@/lib/supabase/browser'
 import { useRouter } from 'next/navigation'
 import BrandLogo from '@/components/brand-logo'
@@ -25,6 +25,7 @@ export default function SiteHeader() {
   const [mobileOpen, setMobileOpen] = useState(false)
   const [announcement, setAnnouncement] = useState('')
   const [hoverIdx, setHoverIdx] = useState(-1)
+  const [openSubs, setOpenSubs] = useState({}) // { [categoryLabel]: true/false } — which mobile submenus are expanded
   const router = useRouter()
 
   useEffect(() => {
@@ -62,6 +63,7 @@ export default function SiteHeader() {
   const submitSearch = (e) => { e.preventDefault(); if (q.trim()) { router.push(`/products?q=${encodeURIComponent(q.trim())}`); setOpenSearch(false); setMobileOpen(false) } }
   const isAdmin = profile?.role === 'admin'
   const openCart = () => window.dispatchEvent(new Event('cart:open'))
+  const toggleSub = (label) => setOpenSubs(prev => ({ ...prev, [label]: !prev[label] }))
 
   return (
     <>
@@ -131,7 +133,7 @@ export default function SiteHeader() {
         }}
       />
 
-      {/* Mobile menu drawer — inline styles guarantee transform + transition regardless of Tailwind build */}
+      {/* Mobile menu drawer — solid opaque background (fixed: was an invalid CSS var() causing transparency) */}
       <div
         role="dialog"
         aria-label="Main menu"
@@ -146,7 +148,7 @@ export default function SiteHeader() {
           zIndex: 999,
           width: '85%',
           maxWidth: '384px',
-          backgroundColor: 'var(--background, #fff)',
+          backgroundColor: 'hsl(var(--background))',
           overflowY: 'auto',
           boxShadow: '0 20px 50px rgba(0,0,0,0.3)',
           transform: mobileOpen ? 'translateX(0)' : 'translateX(-100%)',
@@ -154,19 +156,58 @@ export default function SiteHeader() {
           willChange: 'transform',
         }}
       >
-        <div className="flex items-center justify-between h-16 border-b border-border px-4">
+        {/* Sticky logo header — stays pinned at top while the nav list below it scrolls */}
+        <div
+          className="flex items-center justify-between h-16 border-b border-border px-4"
+          style={{
+            position: 'sticky',
+            top: 0,
+            zIndex: 1,
+            backgroundColor: 'hsl(var(--background))',
+          }}
+        >
           <BrandLogo variant="light" size="sm"/>
           <button onClick={()=>setMobileOpen(false)} aria-label="Close" className="p-2 -mr-2" data-testid="mobile-menu-close"><X className="h-6 w-6"/></button>
         </div>
-        <nav className="flex flex-col gap-1 p-4 text-lg">
-          {NAV.map(n => (
-            <div key={n.label}>
-              <Link href={n.href} onClick={()=>setMobileOpen(false)} className="block py-3 border-b border-border">{n.label}</Link>
-              {n.subs && <div className="pl-4">{n.subs.map(([l,s]) => <Link key={s} href={`/products?category=${s}`} onClick={()=>setMobileOpen(false)} className="block py-2 text-sm text-muted-foreground">{l}</Link>)}</div>}
-            </div>
-          ))}
-          <Link href={user ? '/account' : '/login'} onClick={()=>setMobileOpen(false)} className="py-3 border-b border-border">Account</Link>
-          <Link href="/wishlist" onClick={()=>setMobileOpen(false)} className="py-3 border-b border-border">Wishlist</Link>
+
+        <nav className="flex flex-col p-2 text-base">
+          {NAV.map(n => {
+            const expanded = !!openSubs[n.label]
+            return (
+              <div key={n.label} className="border-b border-border/60">
+                <div className="flex items-center justify-between">
+                  <Link href={n.href} onClick={()=>setMobileOpen(false)} className="flex-1 py-3 px-2">{n.label}</Link>
+                  {n.subs && (
+                    <button
+                      onClick={()=>toggleSub(n.label)}
+                      aria-label={expanded ? `Collapse ${n.label}` : `Expand ${n.label}`}
+                      aria-expanded={expanded}
+                      className="p-3 text-muted-foreground"
+                    >
+                      {expanded ? <Minus className="h-4 w-4"/> : <Plus className="h-4 w-4"/>}
+                    </button>
+                  )}
+                </div>
+                {n.subs && (
+                  <div
+                    style={{
+                      maxHeight: expanded ? `${n.subs.length * 44 + 8}px` : '0px',
+                      overflow: 'hidden',
+                      transition: 'max-height 250ms ease-out',
+                    }}
+                  >
+                    <div className="pl-4 pb-2">
+                      {n.subs.map(([l,s]) => (
+                        <Link key={s} href={`/products?category=${s}`} onClick={()=>setMobileOpen(false)} className="block py-2 text-sm text-muted-foreground">{l}</Link>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )
+          })}
+          <Link href={user ? '/account' : '/login'} onClick={()=>setMobileOpen(false)} className="py-3 px-2 border-b border-border/60">Account</Link>
+          <Link href="/wishlist" onClick={()=>setMobileOpen(false)} className="py-3 px-2 border-b border-border/60">Wishlist</Link>
         </nav>
       </div>
     </>
