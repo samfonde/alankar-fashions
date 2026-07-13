@@ -5,6 +5,9 @@ import SiteHeader from '@/components/site-header'
 import SiteFooter from '@/components/site-footer'
 import WhatsAppFab from '@/components/whatsapp-fab'
 import ProductCard from '@/components/product-card'
+import CategorySlider from '@/components/category-slider'
+import BrandVideo from '@/components/brand-video'
+import BrandStory from '@/components/brand-story'
 import { ArrowRight } from 'lucide-react'
 
 function Hero({ data }) {
@@ -157,11 +160,13 @@ function Home() {
       {sections.map(s => {
         if (s.section_key === 'announcement_bar') return null
         if (s.section_type === 'hero') return <Hero key={s.id} data={s.data}/>
-        if (s.section_type === 'categories') return <CategoryGrid key={s.id} data={s.data}/>
+        if (s.section_type === 'categories') return <CategorySlider key={s.id}/>
         if (s.section_type === 'products') return <ProductStrip key={s.id} title={s.title} products={s.products}/>
         if (s.section_type === 'editorial') return <Editorial key={s.id} data={s.data}/>
         return null
       })}
+      <BrandVideo/>
+      <BrandStory/>
       <Benefits/>
     </>
   )
