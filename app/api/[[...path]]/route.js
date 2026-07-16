@@ -216,12 +216,16 @@ async function handler(request, { params }) {
       const color = searchParams.get('color')
       const limit = Math.min(60, parseInt(searchParams.get('limit') || '24'))
 
-      let query = admin.from('products').select('id,name,slug,price,discount_price,images,category_id,brand,sizes,colors,rating_avg,rating_count,is_new,is_trending,is_featured,stock,tags').eq('status','published')
+      let query = admin.from('products').select('id,name,slug,price,discount_price,images,category_id,brand,sizes,colors,rating_avg,rating_count,is_new,is_trending,is_featured,stock,tags,description,categories!inner(name)').eq('status','published')
       if (cat) {
         const { data: c } = await admin.from('categories').select('id').eq('slug', cat).single()
         if (c) query = query.eq('category_id', c.id)
       }
-      if (q) query = query.ilike('name', `%${q}%`)
+      if (q) {
+        // Broadened search: match name, tags, description, or category name
+        const searchTerm = `%${q}%`
+        query = query.or(`name.ilike.${searchTerm},tags.cs.{${q}},description.ilike.${searchTerm},categories.name.ilike.${searchTerm}`)
+      }
       if (filter === 'new') query = query.eq('is_new', true)
       if (filter === 'trending') query = query.eq('is_trending', true)
       if (filter === 'featured') query = query.eq('is_featured', true)
@@ -256,7 +260,19 @@ async function handler(request, { params }) {
       const q = new URL(request.url).searchParams.get('q') || ''
       if (q.length < 2) return json({ items: [] })
       const admin = getSupabaseAdmin()
-      const { data } = await admin.from('products').select('name,slug,images').ilike('name', `%${q}%`).eq('status','published').limit(6)
+      // Broadened search: name, tags, category, description with pg_trgm for typo tolerance
+      const searchTerm = `%${q}%`
+      const { data } = await admin.rpc('search_products_suggest', { search_query: q }).limit(6)
+      // Fallback if RPC not available
+      if (!data || data.length === 0) {
+        const { data: fallback } = await admin
+          .from('products')
+          .select('name,slug,images,tags,description,categories!inner(name)')
+          .or(`name.ilike.${searchTerm},tags.cs.{${q}},description.ilike.${searchTerm}`)
+          .eq('status','published')
+          .limit(6)
+        return json({ items: fallback || [] })
+      }
       return json({ items: data || [] })
     }
 
