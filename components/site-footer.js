@@ -37,9 +37,18 @@ export default function SiteFooter() {
           <div className="text-xs uppercase tracking-widest opacity-60 mb-3">Help</div>
           <ul className="space-y-2 text-sm opacity-90">
             <li><Link href="/account">My Account</Link></li>
+            <li><Link href="/track-order">Track Order</Link></li>
             <li><Link href="/faq">FAQ</Link></li>
             <li><Link href="/contact">Contact</Link></li>
-            <li>Shipping & Returns</li>
+          </ul>
+        </div>
+        <div>
+          <div className="text-xs uppercase tracking-widest opacity-60 mb-3">Policies</div>
+          <ul className="space-y-2 text-sm opacity-90">
+            <li><Link href="/shipping-policy">Shipping</Link></li>
+            <li><Link href="/return-policy">Returns</Link></li>
+            <li><Link href="/refund-policy">Refunds</Link></li>
+            <li><Link href="/privacy-policy">Privacy</Link></li>
           </ul>
         </div>
         <div>
@@ -54,7 +63,7 @@ export default function SiteFooter() {
       <div className="border-t border-primary-foreground/10">
         <div className="container-tight py-4 text-xs opacity-70 flex flex-col md:flex-row justify-between gap-2">
           <span>© {new Date().getFullYear()} {brand.name}. All rights reserved.</span>
-          <span>Terms · Privacy · Cookies</span>
+          <span><Link href="/terms-and-conditions">Terms</Link> · <Link href="/privacy-policy">Privacy</Link></span>
         </div>
       </div>
     </footer>
