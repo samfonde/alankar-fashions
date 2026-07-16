@@ -26,11 +26,11 @@ export default function SiteFooter() {
         <div>
           <div className="text-xs uppercase tracking-widest opacity-60 mb-3">Shop</div>
           <ul className="space-y-2 text-sm opacity-90">
+            <li><Link href="/about">About Us</Link></li>
             <li><Link href="/products?category=pearls">Pearls</Link></li>
             <li><Link href="/products?category=traditionals">Traditionals</Link></li>
             <li><Link href="/products?category=necklace">Necklace</Link></li>
             <li><Link href="/products?category=bangles">Bangles</Link></li>
-            <li><Link href="/products?category=earrings">Earrings</Link></li>
           </ul>
         </div>
         <div>
