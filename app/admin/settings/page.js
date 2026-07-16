@@ -9,6 +9,7 @@ export default function AdminSettings(){
   useEffect(()=>{ load() },[])
   const upsert = async (key, value) => { const r = await fetch('/api/admin/settings', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ key, value }) }); if(!r.ok){const d=await r.json();return toast.error(d.error||'Failed')} toast.success('Saved'); load() }
   const rp = items.find(s => s.key === 'payment_razorpay')?.value || {}
+  const pp = items.find(s => s.key === 'payment_phonepe')?.value || {}
   const cod = items.find(s => s.key === 'cod')?.value || {}
   const brand = items.find(s => s.key === 'brand')?.value || {}
   const analytics = items.find(s => s.key === 'analytics')?.value || {}
@@ -24,6 +25,10 @@ export default function AdminSettings(){
 
       <Section title="Payment — Razorpay" desc="Paste live keys once ready. Test keys start with rzp_test_. Set webhook URL to /api/webhooks/razorpay in Razorpay Dashboard.">
         <RazorpayForm initial={rp} onSave={v => upsert('payment_razorpay', v)}/>
+      </Section>
+
+      <Section title="Payment — PhonePe" desc="Store PhonePe merchant credentials securely. Paste keys from your PhonePe Business Dashboard. Full checkout integration will be wired up separately.">
+        <PhonePeForm initial={pp} onSave={v => upsert('payment_phonepe', v)}/>
       </Section>
 
       <Section title="Payment — Cash on Delivery (COD)" desc="Enable COD for the Indian market. Optional handling fee & min/max order limits.">
@@ -111,6 +116,19 @@ function RazorpayForm({ initial, onSave }){
       <div className="md:col-span-2"><F label="Webhook Secret"><input value={f.webhook_secret||''} onChange={e=>setF({...f,webhook_secret:e.target.value})} type="password" className="w-full h-10 px-3 border border-border font-mono text-sm"/></F></div>
       <label className="inline-flex items-center gap-2"><input type="checkbox" checked={!!f.live_mode} onChange={e=>setF({...f,live_mode:e.target.checked})}/> Live mode</label>
       <div className="md:col-span-2"><button onClick={()=>onSave(f)} className="inline-flex items-center gap-2 h-10 px-4 bg-primary text-primary-foreground text-xs uppercase tracking-widest"><Save className="h-4 w-4"/> Save payment</button></div>
+    </div>
+  )
+}
+
+function PhonePeForm({ initial, onSave }){
+  const [f,setF] = useState({ merchant_id:'', salt_key:'', live_mode:false, ...(initial||{}) })
+  useEffect(()=>{ setF({ merchant_id:'', salt_key:'', live_mode:false, ...(initial||{}) }) }, [initial])
+  return (
+    <div className="grid md:grid-cols-2 gap-3">
+      <F label="Merchant ID / API Key"><input value={f.merchant_id||''} onChange={e=>setF({...f,merchant_id:e.target.value})} placeholder="e.g. PGTESTPAYUAT or your Merchant ID / Client ID" className="w-full h-10 px-3 border border-border font-mono text-sm" data-testid="phonepe-merchant-id-input"/></F>
+      <F label="Salt Key / Client Secret"><input value={f.salt_key||''} onChange={e=>setF({...f,salt_key:e.target.value})} type="password" placeholder="PhonePe Salt Key or Client Secret" className="w-full h-10 px-3 border border-border font-mono text-sm" data-testid="phonepe-salt-key-input"/></F>
+      <label className="inline-flex items-center gap-2"><input type="checkbox" checked={!!f.live_mode} onChange={e=>setF({...f,live_mode:e.target.checked})} data-testid="phonepe-live-mode-toggle"/> Live mode</label>
+      <div className="md:col-span-2"><button onClick={()=>onSave(f)} className="inline-flex items-center gap-2 h-10 px-4 bg-primary text-primary-foreground text-xs uppercase tracking-widest" data-testid="phonepe-save-btn"><Save className="h-4 w-4"/> Save PhonePe</button></div>
     </div>
   )
 }
