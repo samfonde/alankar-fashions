@@ -49,6 +49,7 @@ export default function SiteFooter() {
             <li><Link href="/return-policy">Returns</Link></li>
             <li><Link href="/refund-policy">Refunds</Link></li>
             <li><Link href="/privacy-policy">Privacy</Link></li>
+            <li><Link href="/terms-and-conditions">Terms &amp; Conditions</Link></li>
           </ul>
         </div>
         <div>
